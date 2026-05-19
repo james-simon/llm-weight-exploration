@@ -134,10 +134,7 @@ def write_master_index(registry: list = None):
         registry = _load_registry()
 
     items = "\n".join(
-        f"""<li>
-  <a href="expts/{e['slug']}/index.html">{e['title']}</a>
-  <div class="desc">{e.get('description', '')}</div>
-</li>"""
+        f'<li><a href="expts/{e["slug"]}/index.html">{e["title"]}</a></li>'
         for e in registry
     )
 
