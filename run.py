@@ -119,6 +119,12 @@ def cmd_render(_args):
             mt = slug[len("midlayer_spectra_comparison_"):]
             run_midlayer_spectra_comparison(PYTHIA_MODELS, mt)
 
+        elif slug.startswith("fanout_fanin_overlap_"):
+            result_name = slug
+            if results_exist(result_name):
+                result = load_results(result_name)
+                render.write_overlap_page(slug=slug, title=entry["title"], result=result)
+
         elif slug.startswith("fanin_fanout_alignment_"):
             # can't easily re-derive args from slug alone; re-run from cached results
             result_name = slug  # slug matches result name
@@ -148,6 +154,17 @@ def cmd_expt(args):
 
     elif name == "fanin_fanout_alignment":
         run_fanin_fanout_alignment(args.model or "pythia-1b", args.layer, args.top_k)
+
+    elif name == "fanout_fanin_overlap":
+        model = args.model or "pythia-1b"
+        result = experiments.fanout_fanin_overlap(model, args.layer)
+        layer = int(result["layer"])
+        slug = f"fanout_fanin_overlap_{model}_layer{layer}"
+        render.write_overlap_page(
+            slug=slug,
+            title=f"{model} layer {layer} — W_out / W_in overlap",
+            result=result,
+        )
 
     else:
         print(f"Unknown experiment: {name}")

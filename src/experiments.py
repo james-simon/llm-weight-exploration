@@ -53,11 +53,20 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
 
     top_k: only compute top-k x top-k submatrix (cheaper, still revealing).
     """
-    n_layers = weights.get_num_layers(model_name)
-    if layer_idx is None:
-        layer_idx = n_layers // 2
+    name_prefix = f"fanout_fanin_overlap_{model_name}_layer"
 
-    name = f"fanout_fanin_overlap_{model_name}_layer{layer_idx}"
+    # resolve layer_idx — try cache first to avoid needing model files locally
+    if layer_idx is None:
+        suffix = "" if top_k is None else f"_k{top_k}"
+        existing = list(svd.RESULTS_DIR.glob(f"{name_prefix}*{suffix}.npz"))
+        if existing:
+            # use the first cached result that matches
+            name = existing[0].stem
+            print(f"  [cached] {name}")
+            return svd.load_results(name)
+        layer_idx = weights.get_num_layers(model_name) // 2
+
+    name = f"{name_prefix}{layer_idx}"
     if top_k is not None:
         name += f"_k{top_k}"
 

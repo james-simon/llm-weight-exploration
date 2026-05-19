@@ -740,3 +740,433 @@ function drawHist() {{
     print(f"  Wrote {path}")
     _register_experiment(slug, title, description, path)
     return path
+
+
+def write_overlap_page(
+    slug: str,
+    title: str,
+    result: dict,   # output of experiments.fanout_fanin_overlap()
+) -> Path:
+    """
+    Interactive page with three panels:
+      1. Spectra of fan_out and fan_in on the same plot (checkable, log/linear)
+      2. 20x20 heatmap of top-left corner of M
+      3. align_k vs k, with random baseline
+    """
+    import numpy as np
+
+    M      = result["M"]
+    S_out  = result["S_out"].tolist()
+    S_in   = result["S_in"].tolist()
+    n_rank = int(result["top_k"])
+    layer  = int(result["layer"])
+    model  = str(result["model"])
+
+    # align_k curve: cumulative mean of top-left k×k block
+    # align_k = (1/k) * sum_{i,j<=k} M[i,j]  (0-indexed, so block is M[:k, :k])
+    max_k = min(n_rank, 512)
+    align_k = []
+    for k in range(1, max_k + 1):
+        block_sum = float(M[:k, :k].sum())
+        align_k.append(block_sum / k)
+
+    # random baseline: each M[i,j] ~ 1/n_intermediate, so align_k_rand = k/n_intermediate
+    n_intermediate = M.shape[0]  # ambient neuron-space dim used (= top_k)
+    # but actual ambient dim is 8192; we need to use that for the true random baseline
+    # We can infer it: row sums of M tell us what fraction of variance is captured
+    # Simpler: just note align_k_rand = k / n_ambient, annotate on plot
+
+    heatmap_n = 20
+    M_corner  = M[:heatmap_n, :heatmap_n].tolist()
+
+    data_json = json.dumps({
+        "S_out":    S_out,
+        "S_in":     S_in,
+        "align_k":  align_k,
+        "M_corner": M_corner,
+        "heatmap_n": heatmap_n,
+        "n_rank":   n_rank,
+        "layer":    layer,
+        "model":    model,
+    })
+
+    out_dir = EXPTS_DIR / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+{CSS}
+.plot-wrap {{
+  position: relative;
+  width: 100%; max-width: 975px;
+  margin: 16px auto 0;
+}}
+.plot-wrap canvas {{
+  display: block; width: 100%; height: 420px;
+  border: 1px solid #ddd; border-radius: 4px; background: #fff;
+}}
+.plot-wrap.heatmap canvas {{
+  height: 480px;
+}}
+.plot-gear {{
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px; padding: 0;
+  background: rgba(255,255,255,0.85);
+  border: 1px solid #ccc; border-radius: 4px;
+  cursor: pointer; font-size: 13px; line-height: 22px; text-align: center;
+  color: #555; opacity: 0; transition: opacity 0.15s; z-index: 10;
+  user-select: none;
+}}
+.plot-wrap:hover .plot-gear {{ opacity: 1; }}
+.plot-gear:hover {{ background: #fff; border-color: #999; color: #222; }}
+.gear-menu {{
+  position: absolute; top: 30px; right: 6px; z-index: 100;
+  background: #fff; border: 1px solid #ccc; border-radius: 5px;
+  padding: 6px 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  min-width: 160px; display: none;
+}}
+.gear-menu.open {{ display: block; }}
+.gear-menu label {{
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 2px; cursor: pointer; font-size: 0.88em; white-space: nowrap;
+}}
+.gear-menu label:hover {{ background: #f4f4f4; border-radius: 3px; }}
+.plot-label {{ font-size:0.85em; color:#888; margin: 24px 0 4px; max-width:975px; margin-left:auto; margin-right:auto; }}
+</style>
+</head>
+<body>
+<a class="back" href="../../index.html">← Back to experiments</a>
+<h1>{title}</h1>
+<p style="color:#555;font-size:0.95em">
+  Layer {layer} of {model}.
+  M<sub>ik</sub> = ⟨u<sub>i</sub><sup>out</sup>, v<sub>k</sub><sup>in</sup>⟩²
+  where u<sup>out</sup> are LSVs of W<sub>out</sub> and v<sup>in</sup> are RSVs of W<sub>in</sub>, both in neuron space.
+</p>
+
+<div class="plot-label">Singular spectra</div>
+<div class="plot-wrap" id="spectra-wrap">
+  <canvas id="spectra-canvas"></canvas>
+  <div class="plot-gear" id="spec-gear-btn">⚙</div>
+  <div class="gear-menu" id="spec-gear-menu">
+    <label><input type="checkbox" id="spec-logy" checked> log y</label>
+    <label><input type="checkbox" id="spec-logx"> log x</label>
+    <label><input type="checkbox" id="spec-norm"> normalize (σ/σ₀)</label>
+  </div>
+</div>
+
+<div class="plot-label">Overlap matrix M (top {heatmap_n}×{heatmap_n})</div>
+<div class="plot-wrap heatmap" id="heatmap-wrap">
+  <canvas id="heatmap-canvas"></canvas>
+</div>
+
+<div class="plot-label">align<sub>k</sub> = k⁻¹ Σ<sub>i,j≤k</sub> M<sub>ij</sub></div>
+<div class="plot-wrap" id="align-wrap">
+  <canvas id="align-canvas"></canvas>
+  <div class="plot-gear" id="align-gear-btn">⚙</div>
+  <div class="gear-menu" id="align-gear-menu">
+    <label><input type="checkbox" id="align-logx"> log x</label>
+    <label><input type="checkbox" id="align-logy"> log y</label>
+  </div>
+</div>
+
+<script>
+const RAW = {data_json};
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+const STORAGE_KEY = 'overlap-state-{slug}';
+const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy'];
+const OPT_DEFAULTS = {{'spec-logy': true}};
+
+function saveState() {{
+  const s = {{}};
+  OPT_IDS.forEach(id => s[id] = document.getElementById(id).checked);
+  try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }} catch(e) {{}}
+}}
+function loadState() {{
+  let saved = null;
+  try {{ saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); }} catch(e) {{}}
+  OPT_IDS.forEach(id => {{
+    document.getElementById(id).checked = saved
+      ? (saved[id] ?? (OPT_DEFAULTS[id] ?? false))
+      : (OPT_DEFAULTS[id] ?? false);
+  }});
+}}
+loadState();
+OPT_IDS.forEach(id => document.getElementById(id).addEventListener('change', () => {{ saveState(); redraw(); }}));
+
+// ── Gear menus ────────────────────────────────────────────────────────────────
+function setupGear(btnId, menuId) {{
+  const btn = document.getElementById(btnId);
+  const menu = document.getElementById(menuId);
+  btn.addEventListener('click', e => {{ menu.classList.toggle('open'); e.stopPropagation(); }});
+  menu.addEventListener('click', e => e.stopPropagation());
+}}
+setupGear('spec-gear-btn',  'spec-gear-menu');
+setupGear('align-gear-btn', 'align-gear-menu');
+document.addEventListener('click', () => {{
+  document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
+}});
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+function linTicks(lo, hi, n) {{
+  const step = niceStep((hi-lo)/n);
+  const ticks = [];
+  for (let v = Math.ceil(lo/step)*step; v <= hi+1e-10; v += step) ticks.push(v);
+  return ticks;
+}}
+function logTicks(lo, hi) {{
+  const ticks = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+    [1,2,5].forEach(m => {{ const v=m*Math.pow(10,e); if(v>=lo&&v<=hi) ticks.push(v); }});
+  return ticks;
+}}
+function niceStep(r) {{
+  const e=Math.pow(10,Math.floor(Math.log10(r))), f=r/e;
+  return (f<1.5?1:f<3?2:f<7?5:10)*e;
+}}
+function fmtNum(v) {{
+  if(Math.abs(v)>=1000||(Math.abs(v)<0.01&&v!==0)) return v.toExponential(1);
+  if(Number.isInteger(v)||Math.abs(v)>=10) return String(Math.round(v));
+  return v.toPrecision(2);
+}}
+function drawAxes(ctx, PAD, pw, ph) {{
+  ctx.strokeStyle='#999'; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(PAD.left,PAD.top); ctx.lineTo(PAD.left,PAD.top+ph);
+  ctx.lineTo(PAD.left+pw,PAD.top+ph); ctx.stroke();
+}}
+function drawGrid(ctx, PAD, pw, ph, xTicks, yTicks, toX, toY) {{
+  ctx.save(); ctx.strokeStyle='#eee'; ctx.lineWidth=1; ctx.fillStyle='#888';
+  ctx.font='11px Georgia,serif';
+  yTicks.forEach(v => {{
+    const y=toY(v); if(y<PAD.top||y>PAD.top+ph+1) return;
+    ctx.beginPath(); ctx.moveTo(PAD.left,y); ctx.lineTo(PAD.left+pw,y); ctx.stroke();
+    ctx.textAlign='right'; ctx.fillText(fmtNum(v),PAD.left-6,y+4);
+  }});
+  xTicks.forEach(v => {{
+    const x=toX(v); if(x<PAD.left||x>PAD.left+pw+1) return;
+    ctx.beginPath(); ctx.moveTo(x,PAD.top); ctx.lineTo(x,PAD.top+ph); ctx.stroke();
+    ctx.textAlign='center'; ctx.fillText(fmtNum(v),x,PAD.top+ph+16);
+  }});
+  ctx.restore();
+}}
+
+// ── 1. Spectra plot ───────────────────────────────────────────────────────────
+const specCanvas = document.getElementById('spectra-canvas');
+
+function drawSpectra() {{
+  const dpr=window.devicePixelRatio||1;
+  const W=specCanvas.offsetWidth, H=specCanvas.offsetHeight||420;
+  specCanvas.width=W*dpr; specCanvas.height=H*dpr;
+  const ctx=specCanvas.getContext('2d'); ctx.scale(dpr,dpr);
+  const logY=document.getElementById('spec-logy').checked;
+  const logX=document.getElementById('spec-logx').checked;
+  const norm=document.getElementById('spec-norm').checked;
+  const PAD={{top:30,right:30,bottom:50,left:70}};
+  const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
+
+  const series = [
+    {{S: RAW.S_out, color:'#2266cc', label:'W_out'}},
+    {{S: RAW.S_in,  color:'#cc4422', label:'W_in', dash:[5,3]}},
+  ];
+  const normalized = series.map(s => ({{
+    ...s,
+    S: norm ? s.S.map(v=>v/s.S[0]) : s.S,
+  }}));
+
+  const allS = normalized.flatMap(s=>s.S.filter(v=>v>0));
+  const allN = Math.max(...normalized.map(s=>s.S.length));
+  let yMin=Math.min(...allS), yMax=Math.max(...allS);
+  if(logY) {{
+    yMin=Math.pow(10,Math.floor(Math.log10(yMin)));
+    yMax=Math.pow(10,Math.ceil(Math.log10(yMax)));
+  }} else {{ const p=(yMax-yMin)*0.05; yMin=Math.max(0,yMin-p); yMax+=p; }}
+
+  function toX(i) {{ return logX
+    ? PAD.left + Math.log10(i+1)/Math.log10(allN)*pw
+    : PAD.left + i/allN*pw; }}
+  function toY(v) {{ return logY
+    ? PAD.top+(1-(Math.log10(Math.max(v,1e-30))-Math.log10(yMin))/(Math.log10(yMax)-Math.log10(yMin)))*ph
+    : PAD.top+(1-(v-yMin)/(yMax-yMin))*ph; }}
+
+  ctx.clearRect(0,0,W,H);
+  const xTicks = logX ? logTicks(1,allN) : linTicks(0,allN,8);
+  const yTicks = logY ? logTicks(yMin,yMax) : linTicks(yMin,yMax,6);
+  const toXgrid = logX ? (v=>PAD.left+Math.log10(v)/Math.log10(allN)*pw) : (v=>PAD.left+v/allN*pw);
+  drawGrid(ctx,PAD,pw,ph,xTicks,yTicks,toXgrid,toY);
+  drawAxes(ctx,PAD,pw,ph);
+
+  ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
+  ctx.fillText('index i', PAD.left+pw/2, H-8);
+  ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(norm?'σᵢ/σ₀':'σᵢ',0,0); ctx.restore();
+
+  // legend
+  normalized.forEach((s,si) => {{
+    ctx.strokeStyle=s.color; ctx.lineWidth=2;
+    if(s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+    ctx.beginPath();
+    s.S.forEach((v,i) => {{
+      if(v<=0) return;
+      const x=toX(i), y=toY(v);
+      i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+    }});
+    ctx.stroke(); ctx.setLineDash([]);
+    // legend label
+    const lx=PAD.left+pw-80, ly=PAD.top+18+si*20;
+    ctx.strokeStyle=s.color; ctx.lineWidth=2;
+    if(s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(lx+22,ly); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle=s.color; ctx.font='12px Georgia,serif'; ctx.textAlign='left';
+    ctx.fillText(s.label,lx+26,ly+4);
+  }});
+}}
+
+// ── 2. Heatmap ────────────────────────────────────────────────────────────────
+const hmCanvas = document.getElementById('heatmap-canvas');
+
+function drawHeatmap() {{
+  const dpr=window.devicePixelRatio||1;
+  const W=hmCanvas.offsetWidth, H=hmCanvas.offsetHeight||480;
+  hmCanvas.width=W*dpr; hmCanvas.height=H*dpr;
+  const ctx=hmCanvas.getContext('2d'); ctx.scale(dpr,dpr);
+  const PAD={{top:30,right:30,bottom:50,left:70}};
+  const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
+  const n=RAW.heatmap_n;
+  const M=RAW.M_corner;
+
+  // color scale: white=0, deep blue=max
+  const flat=M.flat();
+  const vMax=Math.max(...flat);
+  function valToColor(v) {{
+    const t=Math.sqrt(v/vMax);  // sqrt for better contrast on small values
+    const r=Math.round(255*(1-t*0.85));
+    const g=Math.round(255*(1-t*0.72));
+    const b=Math.round(255*(1-t*0.1));
+    return `rgb(${{r}},${{g}},${{b}})`;
+  }}
+
+  ctx.clearRect(0,0,W,H);
+  const cellW=pw/n, cellH=ph/n;
+  for(let i=0;i<n;i++) for(let j=0;j<n;j++) {{
+    ctx.fillStyle=valToColor(M[i][j]);
+    ctx.fillRect(PAD.left+j*cellW, PAD.top+i*cellH, cellW, cellH);
+  }}
+
+  // cell borders (light)
+  ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.lineWidth=0.5;
+  for(let i=0;i<=n;i++) {{
+    ctx.beginPath(); ctx.moveTo(PAD.left,PAD.top+i*cellH); ctx.lineTo(PAD.left+pw,PAD.top+i*cellH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD.left+i*cellW,PAD.top); ctx.lineTo(PAD.left+i*cellW,PAD.top+ph); ctx.stroke();
+  }}
+
+  // axis tick labels
+  ctx.fillStyle='#666'; ctx.font='11px Georgia,serif';
+  const step=Math.max(1,Math.floor(n/10));
+  for(let i=0;i<n;i+=step) {{
+    ctx.textAlign='right';
+    ctx.fillText(i, PAD.left-5, PAD.top+i*cellH+cellH/2+4);
+    ctx.textAlign='center';
+    ctx.fillText(i, PAD.left+i*cellW+cellW/2, PAD.top+ph+16);
+  }}
+
+  // axis labels
+  ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
+  ctx.fillText('j  (W_in RSV index)', PAD.left+pw/2, H-8);
+  ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('i  (W_out LSV index)',0,0); ctx.restore();
+
+  // outer border
+  ctx.strokeStyle='#aaa'; ctx.lineWidth=1;
+  ctx.strokeRect(PAD.left,PAD.top,pw,ph);
+
+  // colorbar (simple gradient strip)
+  const cbX=PAD.left+pw+8, cbY=PAD.top, cbW=14, cbH=ph;
+  const grad=ctx.createLinearGradient(0,cbY,0,cbY+cbH);
+  grad.addColorStop(0, valToColor(vMax));
+  grad.addColorStop(1, valToColor(0));
+  ctx.fillStyle=grad; ctx.fillRect(cbX,cbY,cbW,cbH);
+  ctx.strokeStyle='#aaa'; ctx.lineWidth=1; ctx.strokeRect(cbX,cbY,cbW,cbH);
+  ctx.fillStyle='#666'; ctx.font='10px Georgia,serif'; ctx.textAlign='left';
+  ctx.fillText(fmtNum(vMax), cbX+cbW+3, cbY+10);
+  ctx.fillText('0', cbX+cbW+3, cbY+cbH);
+}}
+
+// ── 3. align_k plot ───────────────────────────────────────────────────────────
+const alignCanvas = document.getElementById('align-canvas');
+
+function drawAlign() {{
+  const dpr=window.devicePixelRatio||1;
+  const W=alignCanvas.offsetWidth, H=alignCanvas.offsetHeight||420;
+  alignCanvas.width=W*dpr; alignCanvas.height=H*dpr;
+  const ctx=alignCanvas.getContext('2d'); ctx.scale(dpr,dpr);
+  const logX=document.getElementById('align-logx').checked;
+  const logY=document.getElementById('align-logy').checked;
+  const PAD={{top:30,right:30,bottom:50,left:70}};
+  const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
+
+  const ak=RAW.align_k;
+  const maxK=ak.length;
+  const n_rank=RAW.n_rank;
+  // random baseline: align_k_rand = k / n_rank  (since M[i,j] ~ 1/n_rank on average)
+  const akRand=ak.map((_,i)=>(i+1)/n_rank);
+
+  const allY=[...ak,...akRand].filter(v=>v>0);
+  let yMin=Math.min(...allY), yMax=Math.max(...allY);
+  if(logY) {{
+    yMin=Math.pow(10,Math.floor(Math.log10(yMin)));
+    yMax=Math.pow(10,Math.ceil(Math.log10(yMax)));
+  }} else {{ yMin=0; yMax=yMax*1.05; }}
+
+  function toX(k1) {{ // 1-based k
+    return logX
+      ? PAD.left+Math.log10(k1)/Math.log10(maxK)*pw
+      : PAD.left+(k1-1)/(maxK-1)*pw;
+  }}
+  function toY(v) {{ return logY
+    ? PAD.top+(1-(Math.log10(Math.max(v,1e-30))-Math.log10(yMin))/(Math.log10(yMax)-Math.log10(yMin)))*ph
+    : PAD.top+(1-(v-yMin)/(yMax-yMin))*ph; }}
+
+  ctx.clearRect(0,0,W,H);
+  const xTicks = logX ? logTicks(1,maxK) : linTicks(1,maxK,8);
+  const yTicks = logY ? logTicks(yMin,yMax) : linTicks(yMin,yMax,6);
+  drawGrid(ctx,PAD,pw,ph,xTicks,yTicks,toX,toY);
+  drawAxes(ctx,PAD,pw,ph);
+
+  ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
+  ctx.fillText('k', PAD.left+pw/2, H-8);
+  ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('alignₖ',0,0); ctx.restore();
+
+  // random baseline
+  ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
+  ctx.beginPath();
+  akRand.forEach((v,i) => {{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle='#aaa'; ctx.font='11px Georgia,serif'; ctx.textAlign='left';
+  ctx.fillText('random', toX(maxK*0.6), toY(akRand[Math.floor(maxK*0.6)])-5);
+
+  // align_k
+  ctx.strokeStyle='#2266cc'; ctx.lineWidth=2;
+  ctx.beginPath();
+  ak.forEach((v,i) => {{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
+  ctx.stroke();
+}}
+
+function redraw() {{ drawSpectra(); drawHeatmap(); drawAlign(); }}
+window.addEventListener('resize', redraw);
+redraw();
+</script>
+</body>
+</html>"""
+
+    path = out_dir / "index.html"
+    path.write_text(html)
+    print(f"  Wrote {path}")
+    _register_experiment(slug, title, "", path)
+    return path
