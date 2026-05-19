@@ -440,7 +440,7 @@ function draw() {{
 
   // Grid lines
   ctx.strokeStyle = '#eee'; ctx.lineWidth = 1;
-  drawGrid(ctx, opts, PAD, pw, ph, xMin, xMax, yMin, yMax, toX, toY);
+  drawGrid(ctx, opts, PAD, pw, ph, xMin, xMax, yMin, yMax, allX, dataToX, toY);
 
   // Axes
   ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
@@ -488,7 +488,7 @@ function draw() {{
   }});
 }}
 
-function drawGrid(ctx, opts, PAD, pw, ph, xMin, xMax, yMin, yMax, toX, toY) {{
+function drawGrid(ctx, opts, PAD, pw, ph, xMin, xMax, yMin, yMax, allX, dataToX, toY) {{
   ctx.save();
   ctx.strokeStyle = '#eee'; ctx.lineWidth = 1; ctx.fillStyle = '#888';
   ctx.font = '11px Georgia,serif';
