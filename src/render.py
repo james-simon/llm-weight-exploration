@@ -379,6 +379,7 @@ function getOpts() {{
 
 // ── Canvas drawing ────────────────────────────────────────────────────────────
 const canvas = document.getElementById('plot');
+const histCanvas = document.getElementById('hist');
 
 function draw() {{
   const dpr = window.devicePixelRatio || 1;
@@ -570,8 +571,6 @@ window.addEventListener('resize', redraw);
 redraw();
 
 // ── Histogram drawing ─────────────────────────────────────────────────────────
-const histCanvas = document.getElementById('hist');
-
 function getHistOpts() {{
   return {{
     logY:    document.getElementById('hist-logy').checked,
