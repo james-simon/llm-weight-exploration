@@ -81,6 +81,7 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
     U_out, S_out, _   = np.linalg.svd(w["fan_out"], full_matrices=False)  # U_out: (intermediate, rank)
     _,     S_in,  Vh_in = np.linalg.svd(w["fan_in"],  full_matrices=False)  # Vh_in: (rank, intermediate)
 
+    n_intermediate = w["fan_out"].shape[0]  # ambient neuron-space dimension (e.g. 8192)
     k = top_k if top_k is not None else S_out.shape[0]
     U_out_k = U_out[:, :k]        # (intermediate, k) — fan_out LSVs in neuron space
     V_in_k  = Vh_in[:k, :].T      # (intermediate, k) — fan_in  RSVs in neuron space
@@ -89,15 +90,32 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
     M = (U_out_k.T @ V_in_k) ** 2  # (k, k)
 
     result = {
-        "M":       M,
-        "S_out":   S_out,
-        "S_in":    S_in,
-        "top_k":   np.array(k),
-        "layer":   np.array(layer_idx),
-        "model":   np.array(model_name),
+        "M":            M,
+        "S_out":        S_out,
+        "S_in":         S_in,
+        "top_k":        np.array(k),
+        "n_intermediate": np.array(n_intermediate),
+        "layer":        np.array(layer_idx),
+        "model":        np.array(model_name),
     }
     svd.save_results(name, result)
     return result
+
+
+def fanout_fanin_overlap_all_layers(model_name: str) -> dict:
+    """
+    Run fanout_fanin_overlap for every layer. Results cached per-layer via
+    fanout_fanin_overlap; this function just collects them and caches a combined
+    summary (align_k curves + M corners) for fast rendering.
+    Returns dict: {layer_idx -> per-layer result dict}
+    """
+    name = f"fanout_fanin_overlap_all_layers_{model_name}"
+    n_layers = weights.get_num_layers(model_name)
+
+    results = {}
+    for layer_idx in range(n_layers):
+        results[layer_idx] = fanout_fanin_overlap(model_name, layer_idx)
+    return results
 
 
 # ── Random baseline (Marchenko-Pastur) ───────────────────────────────────────

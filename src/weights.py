@@ -31,8 +31,19 @@ def get_model_dir(model_name: str) -> Path:
 
 
 def get_num_layers(model_name: str) -> int:
-    config = json.load(open(get_model_dir(model_name) / "config.json"))
-    return config["num_hidden_layers"]
+    config_path = get_model_dir(model_name) / "config.json"
+    if config_path.exists():
+        return json.load(open(config_path))["num_hidden_layers"]
+    # fall back to counting cached per-layer SVD results
+    from . import svd
+    for prefix in [f"spectra_all_layers_{model_name}_fan_out",
+                   f"spectra_all_layers_{model_name}_fan_in"]:
+        if svd.results_exist(prefix):
+            data = svd.load_results(prefix)
+            keys = [k for k in data.keys() if k.startswith("layer_")]
+            if keys:
+                return max(int(k.split("_")[1]) for k in keys) + 1
+    raise FileNotFoundError(f"Cannot determine layer count for {model_name}: no config.json or cached spectra found")
 
 
 def _open_safetensors(model_dir: Path):
@@ -80,7 +91,7 @@ def load_mlp_weights(model_name: str, layer_idx: int) -> dict:
     }
 
 
-def load_all_mlp_weights(model_name: str) -> list[dict]:
+def load_all_mlp_weights(model_name: str) -> list:
     """Load MLP weights for every layer in a model."""
     model_dir = get_model_dir(model_name)
     handles = _open_safetensors(model_dir)

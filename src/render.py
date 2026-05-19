@@ -70,10 +70,10 @@ def _html_skeleton(title: str, body: str) -> str:
 def write_experiment_page(
     slug: str,
     title: str,
-    figures: list[plt.Figure],
+    figures: list,
     description: str = "",
     grid_cols: int = 4,
-    fig_labels: list[str] = None,
+    fig_labels: list = None,
 ) -> Path:
     """
     Write a self-contained experiment page with a grid of figures.
@@ -745,7 +745,9 @@ function drawHist() {{
 def write_overlap_page(
     slug: str,
     title: str,
-    result: dict,   # output of experiments.fanout_fanin_overlap()
+    result: dict,           # output of experiments.fanout_fanin_overlap()
+    random_out: list = None,  # singular values of random matrix, same shape as fan_out
+    random_in:  list = None,  # singular values of random matrix, same shape as fan_in
 ) -> Path:
     """
     Interactive page with three panels:
@@ -761,33 +763,32 @@ def write_overlap_page(
     n_rank = int(result["top_k"])
     layer  = int(result["layer"])
     model  = str(result["model"])
+    # n_intermediate: ambient neuron-space dimension (e.g. 8192 for pythia-1b)
+    # random baseline for align_k is k/n_intermediate, not k/n_rank
+    n_intermediate = int(result["n_intermediate"]) if "n_intermediate" in result else None
 
     # align_k curve: cumulative mean of top-left k×k block
     # align_k = (1/k) * sum_{i,j<=k} M[i,j]  (0-indexed, so block is M[:k, :k])
-    max_k = min(n_rank, 512)
     align_k = []
-    for k in range(1, max_k + 1):
+    for k in range(1, n_rank + 1):
         block_sum = float(M[:k, :k].sum())
         align_k.append(block_sum / k)
-
-    # random baseline: each M[i,j] ~ 1/n_intermediate, so align_k_rand = k/n_intermediate
-    n_intermediate = M.shape[0]  # ambient neuron-space dim used (= top_k)
-    # but actual ambient dim is 8192; we need to use that for the true random baseline
-    # We can infer it: row sums of M tell us what fraction of variance is captured
-    # Simpler: just note align_k_rand = k / n_ambient, annotate on plot
 
     heatmap_n = 20
     M_corner  = M[:heatmap_n, :heatmap_n].tolist()
 
     data_json = json.dumps({
-        "S_out":    S_out,
-        "S_in":     S_in,
-        "align_k":  align_k,
-        "M_corner": M_corner,
-        "heatmap_n": heatmap_n,
-        "n_rank":   n_rank,
-        "layer":    layer,
-        "model":    model,
+        "S_out":          S_out,
+        "S_in":           S_in,
+        "S_rand_out":     random_out if random_out is not None else [],
+        "S_rand_in":      random_in  if random_in  is not None else [],
+        "align_k":        align_k,
+        "M_corner":       M_corner,
+        "heatmap_n":      heatmap_n,
+        "n_rank":         n_rank,
+        "n_intermediate": n_intermediate,
+        "layer":          layer,
+        "model":          model,
     })
 
     out_dir = EXPTS_DIR / slug
@@ -870,6 +871,8 @@ def write_overlap_page(
   <div class="gear-menu" id="align-gear-menu">
     <label><input type="checkbox" id="align-logx"> log x</label>
     <label><input type="checkbox" id="align-logy"> log y</label>
+    <label><input type="checkbox" id="align-ratio"> show ratio (alignₖ / random)</label>
+    <label style="gap:6px;">max k&nbsp;<input type="number" id="align-maxk" value="{n_rank}" min="1" max="{n_rank}" style="width:56px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
   </div>
 </div>
 
@@ -878,12 +881,13 @@ const RAW = {data_json};
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'overlap-state-{slug}';
-const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy'];
+const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio'];
 const OPT_DEFAULTS = {{'spec-logy': true}};
 
 function saveState() {{
   const s = {{}};
   OPT_IDS.forEach(id => s[id] = document.getElementById(id).checked);
+  s['align-maxk'] = document.getElementById('align-maxk').value;
   try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }} catch(e) {{}}
 }}
 function loadState() {{
@@ -894,9 +898,11 @@ function loadState() {{
       ? (saved[id] ?? (OPT_DEFAULTS[id] ?? false))
       : (OPT_DEFAULTS[id] ?? false);
   }});
+  if (saved?.['align-maxk']) document.getElementById('align-maxk').value = saved['align-maxk'];
 }}
 loadState();
 OPT_IDS.forEach(id => document.getElementById(id).addEventListener('change', () => {{ saveState(); redraw(); }}));
+document.getElementById('align-maxk').addEventListener('input', () => {{ saveState(); drawAlign(); }});
 
 // ── Gear menus ────────────────────────────────────────────────────────────────
 function setupGear(btnId, menuId) {{
@@ -969,14 +975,18 @@ function drawSpectra() {{
   const PAD={{top:30,right:30,bottom:50,left:70}};
   const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
 
+  function normS(S) {{
+    if (!norm) return S;
+    const mean = S.reduce((a,b)=>a+b,0)/S.length;
+    return S.map(v=>v/mean);
+  }}
+
   const series = [
-    {{S: RAW.S_out, color:'#2266cc', label:'W_out'}},
-    {{S: RAW.S_in,  color:'#cc4422', label:'W_in', dash:[5,3]}},
+    {{S: RAW.S_out,      color:'#2266cc', label:'W_out'}},
+    {{S: RAW.S_in,       color:'#cc4422', label:'W_in',    dash:[5,3]}},
+    ...(RAW.S_rand_out.length ? [{{S: RAW.S_rand_out, color:'#888',   label:'random', dash:[4,2]}}] : []),
   ];
-  const normalized = series.map(s => ({{
-    ...s,
-    S: norm ? s.S.map(v=>v/s.S[0]) : s.S,
-  }}));
+  const normalized = series.map(s => ({{...s, S: normS(s.S)}}));
 
   const allS = normalized.flatMap(s=>s.S.filter(v=>v>0));
   const allN = Math.max(...normalized.map(s=>s.S.length));
@@ -1003,7 +1013,7 @@ function drawSpectra() {{
   ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
   ctx.fillText('index i', PAD.left+pw/2, H-8);
   ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.fillText(norm?'σᵢ/σ₀':'σᵢ',0,0); ctx.restore();
+  ctx.fillText(norm?'σᵢ / ⟨σ⟩':'σᵢ',0,0); ctx.restore();
 
   // legend
   normalized.forEach((s,si) => {{
@@ -1035,7 +1045,7 @@ function drawHeatmap() {{
   const W=hmCanvas.offsetWidth, H=hmCanvas.offsetHeight||480;
   hmCanvas.width=W*dpr; hmCanvas.height=H*dpr;
   const ctx=hmCanvas.getContext('2d'); ctx.scale(dpr,dpr);
-  const PAD={{top:30,right:30,bottom:50,left:70}};
+  const PAD={{top:30,right:60,bottom:50,left:70}};
   const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
   const n=RAW.heatmap_n;
   const M=RAW.M_corner;
@@ -1093,9 +1103,37 @@ function drawHeatmap() {{
   ctx.fillStyle=grad; ctx.fillRect(cbX,cbY,cbW,cbH);
   ctx.strokeStyle='#aaa'; ctx.lineWidth=1; ctx.strokeRect(cbX,cbY,cbW,cbH);
   ctx.fillStyle='#666'; ctx.font='10px Georgia,serif'; ctx.textAlign='left';
-  ctx.fillText(fmtNum(vMax), cbX+cbW+3, cbY+10);
-  ctx.fillText('0', cbX+cbW+3, cbY+cbH);
+  ctx.fillText(fmtNum(vMax), cbX, cbY-2);
+  ctx.fillText('0', cbX, cbY+cbH+10);
 }}
+
+// ── Heatmap tooltip ───────────────────────────────────────────────────────────
+(function() {{
+  const tooltip = document.createElement('div');
+  tooltip.style.cssText = 'position:fixed;background:rgba(0,0,0,0.75);color:#fff;font:12px Georgia,serif;padding:4px 8px;border-radius:4px;pointer-events:none;display:none;z-index:999';
+  document.body.appendChild(tooltip);
+
+  hmCanvas.addEventListener('mousemove', e => {{
+    const rect = hmCanvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (hmCanvas.width / rect.width / (window.devicePixelRatio||1));
+    const my = (e.clientY - rect.top)  * (hmCanvas.height / rect.height / (window.devicePixelRatio||1));
+    const PAD={{top:30,right:30,bottom:50,left:70}};
+    const pw = hmCanvas.width/(window.devicePixelRatio||1) - PAD.left - PAD.right;
+    const ph = hmCanvas.height/(window.devicePixelRatio||1) - PAD.top  - PAD.bottom;
+    const n = RAW.heatmap_n;
+    const ci = Math.floor((mx - PAD.left) / (pw/n));
+    const ri = Math.floor((my - PAD.top)  / (ph/n));
+    if (ri>=0 && ri<n && ci>=0 && ci<n) {{
+      tooltip.style.display = 'block';
+      tooltip.style.left = (e.clientX+14)+'px';
+      tooltip.style.top  = (e.clientY-20)+'px';
+      tooltip.textContent = `i=${{ri}}, j=${{ci}}: ${{RAW.M_corner[ri][ci].toFixed(4)}}`;
+    }} else {{
+      tooltip.style.display = 'none';
+    }}
+  }});
+  hmCanvas.addEventListener('mouseleave', () => {{ tooltip.style.display='none'; }});
+}})();
 
 // ── 3. align_k plot ───────────────────────────────────────────────────────────
 const alignCanvas = document.getElementById('align-canvas');
@@ -1105,25 +1143,34 @@ function drawAlign() {{
   const W=alignCanvas.offsetWidth, H=alignCanvas.offsetHeight||420;
   alignCanvas.width=W*dpr; alignCanvas.height=H*dpr;
   const ctx=alignCanvas.getContext('2d'); ctx.scale(dpr,dpr);
-  const logX=document.getElementById('align-logx').checked;
-  const logY=document.getElementById('align-logy').checked;
-  const PAD={{top:30,right:30,bottom:50,left:70}};
+  const logX  = document.getElementById('align-logx').checked;
+  const logY  = document.getElementById('align-logy').checked;
+  const ratio = document.getElementById('align-ratio').checked;
+  const PAD={{top:30,right:30,bottom:50,left:80}};
   const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
 
-  const ak=RAW.align_k;
-  const maxK=ak.length;
-  const n_rank=RAW.n_rank;
-  // random baseline: align_k_rand = k / n_rank  (since M[i,j] ~ 1/n_rank on average)
-  const akRand=ak.map((_,i)=>(i+1)/n_rank);
+  const akFull=RAW.align_k;
+  const maxKRaw = Math.max(1, Math.min(akFull.length, parseInt(document.getElementById('align-maxk').value) || akFull.length));
+  const ak = akFull.slice(0, maxKRaw);
+  const maxK = ak.length;
+  const n_ambient = RAW.n_intermediate || RAW.n_rank;
+  const akRand = ak.map((_,i) => (i+1)/n_ambient);
 
-  const allY=[...ak,...akRand].filter(v=>v>0);
+  // in ratio mode: plot ak[i]/akRand[i] = ak[i] * n_ambient / (i+1); random baseline = 1
+  const plotAk   = ratio ? ak.map((v,i) => v / akRand[i]) : ak;
+  const plotRand = ratio ? ak.map(() => 1)                 : akRand;
+
+  const allY = [...plotAk, ...(ratio ? [] : plotRand)].filter(v=>v>0);
   let yMin=Math.min(...allY), yMax=Math.max(...allY);
   if(logY) {{
     yMin=Math.pow(10,Math.floor(Math.log10(yMin)));
     yMax=Math.pow(10,Math.ceil(Math.log10(yMax)));
-  }} else {{ yMin=0; yMax=yMax*1.05; }}
+  }} else {{
+    yMin = ratio ? 0 : 0;
+    yMax = yMax*1.05;
+  }}
 
-  function toX(k1) {{ // 1-based k
+  function toX(k1) {{
     return logX
       ? PAD.left+Math.log10(k1)/Math.log10(maxK)*pw
       : PAD.left+(k1-1)/(maxK-1)*pw;
@@ -1141,20 +1188,540 @@ function drawAlign() {{
   ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
   ctx.fillText('k', PAD.left+pw/2, H-8);
   ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.fillText('alignₖ',0,0); ctx.restore();
+  ctx.fillText(ratio ? 'alignₖ / random' : 'alignₖ', 0, 0);
+  ctx.restore();
 
-  // random baseline
-  ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
-  ctx.beginPath();
-  akRand.forEach((v,i) => {{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
-  ctx.stroke(); ctx.setLineDash([]);
-  ctx.fillStyle='#aaa'; ctx.font='11px Georgia,serif'; ctx.textAlign='left';
-  ctx.fillText('random', toX(maxK*0.6), toY(akRand[Math.floor(maxK*0.6)])-5);
+  if (ratio) {{
+    // draw y=1 reference line
+    const y1 = toY(1);
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
+    ctx.beginPath(); ctx.moveTo(PAD.left,y1); ctx.lineTo(PAD.left+pw,y1); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#aaa'; ctx.font='11px Georgia,serif'; ctx.textAlign='left';
+    ctx.fillText('random (= 1)', PAD.left+4, y1-4);
+  }} else {{
+    // draw random curve
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
+    ctx.beginPath();
+    plotRand.forEach((v,i) => {{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#aaa'; ctx.font='11px Georgia,serif'; ctx.textAlign='left';
+    const labelI = Math.floor(maxK*0.6);
+    ctx.fillText('random', toX(labelI+1), toY(plotRand[labelI])-5);
+  }}
 
-  // align_k
+  // main curve
   ctx.strokeStyle='#2266cc'; ctx.lineWidth=2;
   ctx.beginPath();
-  ak.forEach((v,i) => {{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
+  plotAk.forEach((v,i) => {{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
+  ctx.stroke();
+}}
+
+function redraw() {{ drawSpectra(); drawHeatmap(); drawAlign(); }}
+window.addEventListener('resize', redraw);
+redraw();
+</script>
+</body>
+</html>"""
+
+    path = out_dir / "index.html"
+    path.write_text(html)
+    print(f"  Wrote {path}")
+    _register_experiment(slug, title, "", path)
+    return path
+
+
+def write_overlap_all_layers_page(
+    slug: str,
+    title: str,
+    results: dict,           # {layer_idx -> result dict from fanout_fanin_overlap}
+    random_out: list = None,
+    random_in:  list = None,
+    n_intermediate: int = None,
+) -> Path:
+    """
+    All-layers overlap page: same three panels as write_overlap_page, but with
+    a layer-selector toggle bar at the top. Clicking a layer updates all plots.
+    """
+    import numpy as np
+
+    layer_indices = sorted(results.keys())
+    n_layers = len(layer_indices)
+    heatmap_n = 20
+
+    # build per-layer data
+    layers_data = {}
+    for layer_idx in layer_indices:
+        r = results[layer_idx]
+        M = r["M"]
+        n_rank = int(r["top_k"])
+        S_out = r["S_out"].tolist()
+        S_in  = r["S_in"].tolist()
+
+        align_k = []
+        for k in range(1, n_rank + 1):
+            align_k.append(float(M[:k, :k].sum()) / k)
+
+        ni = int(r["n_intermediate"]) if "n_intermediate" in r else n_intermediate
+
+        layers_data[layer_idx] = {
+            "S_out":          S_out,
+            "S_in":           S_in,
+            "align_k":        align_k,
+            "M_corner":       M[:heatmap_n, :heatmap_n].tolist(),
+            "n_rank":         n_rank,
+            "n_intermediate": ni,
+        }
+
+    # use first layer's n_intermediate as fallback for random baseline
+    ni_fallback = n_intermediate or next(
+        (int(r["n_intermediate"]) for r in results.values() if "n_intermediate" in r), None
+    )
+
+    data_json = json.dumps({
+        "layers":       layers_data,
+        "layer_indices": layer_indices,
+        "S_rand_out":   random_out if random_out is not None else [],
+        "S_rand_in":    random_in  if random_in  is not None else [],
+        "heatmap_n":    heatmap_n,
+        "n_intermediate": ni_fallback,
+    })
+
+    out_dir = EXPTS_DIR / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    first_n_rank = layers_data[layer_indices[0]]["n_rank"]
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+{CSS}
+.plot-wrap {{
+  position: relative;
+  width: 100%; max-width: 975px;
+  margin: 16px auto 0;
+}}
+.plot-wrap canvas {{
+  display: block; width: 100%; height: 420px;
+  border: 1px solid #ddd; border-radius: 4px; background: #fff;
+}}
+.plot-wrap.heatmap canvas {{ height: 480px; }}
+.plot-gear {{
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px; padding: 0;
+  background: rgba(255,255,255,0.85);
+  border: 1px solid #ccc; border-radius: 4px;
+  cursor: pointer; font-size: 13px; line-height: 22px; text-align: center;
+  color: #555; opacity: 0; transition: opacity 0.15s; z-index: 10;
+  user-select: none;
+}}
+.plot-wrap:hover .plot-gear {{ opacity: 1; }}
+.plot-gear:hover {{ background: #fff; border-color: #999; color: #222; }}
+.gear-menu {{
+  position: absolute; top: 30px; right: 6px; z-index: 100;
+  background: #fff; border: 1px solid #ccc; border-radius: 5px;
+  padding: 6px 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  min-width: 160px; display: none;
+}}
+.gear-menu.open {{ display: block; }}
+.gear-menu label {{
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 2px; cursor: pointer; font-size: 0.88em; white-space: nowrap;
+}}
+.gear-menu label:hover {{ background: #f4f4f4; border-radius: 3px; }}
+.plot-label {{ font-size:0.85em; color:#888; margin: 24px 0 4px; max-width:975px; margin-left:auto; margin-right:auto; }}
+
+/* layer selector */
+.layer-selector {{
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin: 16px 0 4px; max-width: 975px;
+}}
+.layer-btn {{
+  padding: 4px 10px; font-size: 0.85em; cursor: pointer;
+  border: 1px solid #ccc; border-radius: 4px;
+  background: #f5f5f5; color: #444;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+  user-select: none;
+}}
+.layer-btn:hover {{ background: #e8e8e8; }}
+.layer-btn.active {{
+  background: #2266cc; color: #fff; border-color: #1a55bb;
+}}
+</style>
+</head>
+<body>
+<a class="back" href="../../index.html">← Back to experiments</a>
+<h1>{title}</h1>
+<p style="color:#555;font-size:0.95em">
+  M<sub>ik</sub> = ⟨u<sub>i</sub><sup>out</sup>, v<sub>k</sub><sup>in</sup>⟩²
+  where u<sup>out</sup> are LSVs of W<sub>out</sub> and v<sup>in</sup> are RSVs of W<sub>in</sub>, both in neuron space.
+</p>
+
+<div class="layer-selector" id="layer-selector"></div>
+
+<div class="plot-label" id="spectra-label">Singular spectra</div>
+<div class="plot-wrap" id="spectra-wrap">
+  <canvas id="spectra-canvas"></canvas>
+  <div class="plot-gear" id="spec-gear-btn">⚙</div>
+  <div class="gear-menu" id="spec-gear-menu">
+    <label><input type="checkbox" id="spec-logy" checked> log y</label>
+    <label><input type="checkbox" id="spec-logx"> log x</label>
+    <label><input type="checkbox" id="spec-norm"> normalize (σ/⟨σ⟩)</label>
+  </div>
+</div>
+
+<div class="plot-label" id="heatmap-label">Overlap matrix M (top {heatmap_n}×{heatmap_n})</div>
+<div class="plot-wrap heatmap" id="heatmap-wrap">
+  <canvas id="heatmap-canvas"></canvas>
+</div>
+
+<div class="plot-label" id="align-label">align<sub>k</sub> = k⁻¹ Σ<sub>i,j≤k</sub> M<sub>ij</sub></div>
+<div class="plot-wrap" id="align-wrap">
+  <canvas id="align-canvas"></canvas>
+  <div class="plot-gear" id="align-gear-btn">⚙</div>
+  <div class="gear-menu" id="align-gear-menu">
+    <label><input type="checkbox" id="align-logx"> log x</label>
+    <label><input type="checkbox" id="align-logy"> log y</label>
+    <label><input type="checkbox" id="align-ratio"> show ratio (alignₖ / random)</label>
+    <label style="gap:6px;">max k&nbsp;<input type="number" id="align-maxk" value="{first_n_rank}" min="1" max="{first_n_rank}" style="width:56px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
+  </div>
+</div>
+
+<script>
+const RAW = {data_json};
+
+// ── Layer selector ────────────────────────────────────────────────────────────
+let activeLayer = RAW.layer_indices[0];
+
+const selectorEl = document.getElementById('layer-selector');
+RAW.layer_indices.forEach(li => {{
+  const btn = document.createElement('button');
+  btn.className = 'layer-btn' + (li === activeLayer ? ' active' : '');
+  btn.textContent = 'L' + li;
+  btn.dataset.layer = li;
+  btn.addEventListener('click', () => {{
+    activeLayer = li;
+    document.querySelectorAll('.layer-btn').forEach(b =>
+      b.classList.toggle('active', +b.dataset.layer === li));
+    saveState();
+    redraw();
+  }});
+  selectorEl.appendChild(btn);
+}});
+
+function layerData() {{ return RAW.layers[activeLayer]; }}
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+const STORAGE_KEY = 'overlap-all-{slug}';
+const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio'];
+const OPT_DEFAULTS = {{'spec-logy': true}};
+
+function saveState() {{
+  const s = {{}};
+  OPT_IDS.forEach(id => s[id] = document.getElementById(id).checked);
+  s['align-maxk'] = document.getElementById('align-maxk').value;
+  s['active-layer'] = activeLayer;
+  try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }} catch(e) {{}}
+}}
+function loadState() {{
+  let saved = null;
+  try {{ saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); }} catch(e) {{}}
+  OPT_IDS.forEach(id => {{
+    document.getElementById(id).checked = saved
+      ? (saved[id] ?? (OPT_DEFAULTS[id] ?? false))
+      : (OPT_DEFAULTS[id] ?? false);
+  }});
+  if (saved?.['align-maxk']) document.getElementById('align-maxk').value = saved['align-maxk'];
+  if (saved?.['active-layer'] != null && RAW.layers[saved['active-layer']]) {{
+    activeLayer = saved['active-layer'];
+    document.querySelectorAll('.layer-btn').forEach(b =>
+      b.classList.toggle('active', +b.dataset.layer === activeLayer));
+  }}
+}}
+loadState();
+OPT_IDS.forEach(id => document.getElementById(id).addEventListener('change', () => {{ saveState(); redraw(); }}));
+document.getElementById('align-maxk').addEventListener('input', () => {{ saveState(); drawAlign(); }});
+
+// ── Gear menus ────────────────────────────────────────────────────────────────
+function setupGear(btnId, menuId) {{
+  const btn = document.getElementById(btnId);
+  const menu = document.getElementById(menuId);
+  btn.addEventListener('click', e => {{ menu.classList.toggle('open'); e.stopPropagation(); }});
+  menu.addEventListener('click', e => e.stopPropagation());
+}}
+setupGear('spec-gear-btn',  'spec-gear-menu');
+setupGear('align-gear-btn', 'align-gear-menu');
+document.addEventListener('click', () => {{
+  document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
+}});
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+function linTicks(lo, hi, n) {{
+  const step = niceStep((hi-lo)/n);
+  const ticks = [];
+  for (let v = Math.ceil(lo/step)*step; v <= hi+1e-10; v += step) ticks.push(v);
+  return ticks;
+}}
+function logTicks(lo, hi) {{
+  const ticks = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+    [1,2,5].forEach(m => {{ const v=m*Math.pow(10,e); if(v>=lo&&v<=hi) ticks.push(v); }});
+  return ticks;
+}}
+function niceStep(r) {{
+  const e=Math.pow(10,Math.floor(Math.log10(r))), f=r/e;
+  return (f<1.5?1:f<3?2:f<7?5:10)*e;
+}}
+function fmtNum(v) {{
+  if(Math.abs(v)>=1000||(Math.abs(v)<0.01&&v!==0)) return v.toExponential(1);
+  if(Number.isInteger(v)||Math.abs(v)>=10) return String(Math.round(v));
+  return v.toPrecision(2);
+}}
+function drawAxes(ctx, PAD, pw, ph) {{
+  ctx.strokeStyle='#999'; ctx.lineWidth=1.5;
+  ctx.beginPath();
+  ctx.moveTo(PAD.left,PAD.top); ctx.lineTo(PAD.left,PAD.top+ph);
+  ctx.lineTo(PAD.left+pw,PAD.top+ph); ctx.stroke();
+}}
+function drawGrid(ctx, PAD, pw, ph, xTicks, yTicks, toX, toY) {{
+  ctx.save(); ctx.strokeStyle='#eee'; ctx.lineWidth=1; ctx.fillStyle='#888';
+  ctx.font='11px Georgia,serif';
+  yTicks.forEach(v => {{
+    const y=toY(v); if(y<PAD.top||y>PAD.top+ph+1) return;
+    ctx.beginPath(); ctx.moveTo(PAD.left,y); ctx.lineTo(PAD.left+pw,y); ctx.stroke();
+    ctx.textAlign='right'; ctx.fillText(fmtNum(v),PAD.left-6,y+4);
+  }});
+  xTicks.forEach(v => {{
+    const x=toX(v); if(x<PAD.left||x>PAD.left+pw+1) return;
+    ctx.beginPath(); ctx.moveTo(x,PAD.top); ctx.lineTo(x,PAD.top+ph); ctx.stroke();
+    ctx.textAlign='center'; ctx.fillText(fmtNum(v),x,PAD.top+ph+16);
+  }});
+  ctx.restore();
+}}
+
+// ── 1. Spectra ────────────────────────────────────────────────────────────────
+const specCanvas = document.getElementById('spectra-canvas');
+
+function drawSpectra() {{
+  const dpr=window.devicePixelRatio||1;
+  const W=specCanvas.offsetWidth, H=specCanvas.offsetHeight||420;
+  specCanvas.width=W*dpr; specCanvas.height=H*dpr;
+  const ctx=specCanvas.getContext('2d'); ctx.scale(dpr,dpr);
+  const logY=document.getElementById('spec-logy').checked;
+  const logX=document.getElementById('spec-logx').checked;
+  const norm=document.getElementById('spec-norm').checked;
+  const PAD={{top:30,right:30,bottom:50,left:70}};
+  const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
+  const ld = layerData();
+
+  function normS(S) {{
+    if (!norm) return S;
+    const mean = S.reduce((a,b)=>a+b,0)/S.length;
+    return S.map(v=>v/mean);
+  }}
+
+  const series = [
+    {{S: ld.S_out,      color:'#2266cc', label:'W_out'}},
+    {{S: ld.S_in,       color:'#cc4422', label:'W_in',  dash:[5,3]}},
+    ...(RAW.S_rand_out.length ? [{{S: RAW.S_rand_out, color:'#888', label:'random', dash:[4,2]}}] : []),
+  ];
+  const normalized = series.map(s => ({{...s, S: normS(s.S)}}));
+
+  const allS = normalized.flatMap(s=>s.S.filter(v=>v>0));
+  const allN = Math.max(...normalized.map(s=>s.S.length));
+  let yMin=Math.min(...allS), yMax=Math.max(...allS);
+  if(logY) {{
+    yMin=Math.pow(10,Math.floor(Math.log10(yMin)));
+    yMax=Math.pow(10,Math.ceil(Math.log10(yMax)));
+  }} else {{ const p=(yMax-yMin)*0.05; yMin=Math.max(0,yMin-p); yMax+=p; }}
+
+  function toX(i) {{ return logX
+    ? PAD.left + Math.log10(i+1)/Math.log10(allN)*pw
+    : PAD.left + i/allN*pw; }}
+  function toY(v) {{ return logY
+    ? PAD.top+(1-(Math.log10(Math.max(v,1e-30))-Math.log10(yMin))/(Math.log10(yMax)-Math.log10(yMin)))*ph
+    : PAD.top+(1-(v-yMin)/(yMax-yMin))*ph; }}
+
+  ctx.clearRect(0,0,W,H);
+  const toXgrid = logX ? (v=>PAD.left+Math.log10(v)/Math.log10(allN)*pw) : (v=>PAD.left+v/allN*pw);
+  drawGrid(ctx,PAD,pw,ph,
+    logX?logTicks(1,allN):linTicks(0,allN,8),
+    logY?logTicks(yMin,yMax):linTicks(yMin,yMax,6),
+    toXgrid,toY);
+  drawAxes(ctx,PAD,pw,ph);
+
+  ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
+  ctx.fillText('index i', PAD.left+pw/2, H-8);
+  ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(norm?'σᵢ / ⟨σ⟩':'σᵢ',0,0); ctx.restore();
+
+  normalized.forEach((s,si) => {{
+    ctx.strokeStyle=s.color; ctx.lineWidth=2;
+    if(s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+    ctx.beginPath();
+    s.S.forEach((v,i) => {{ if(v<=0) return; const x=toX(i),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
+    ctx.stroke(); ctx.setLineDash([]);
+    const lx=PAD.left+pw-80, ly=PAD.top+18+si*20;
+    ctx.strokeStyle=s.color; ctx.lineWidth=2;
+    if(s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(lx+22,ly); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle=s.color; ctx.font='12px Georgia,serif'; ctx.textAlign='left';
+    ctx.fillText(s.label,lx+26,ly+4);
+  }});
+}}
+
+// ── 2. Heatmap ────────────────────────────────────────────────────────────────
+const hmCanvas = document.getElementById('heatmap-canvas');
+
+function drawHeatmap() {{
+  const dpr=window.devicePixelRatio||1;
+  const W=hmCanvas.offsetWidth, H=hmCanvas.offsetHeight||480;
+  hmCanvas.width=W*dpr; hmCanvas.height=H*dpr;
+  const ctx=hmCanvas.getContext('2d'); ctx.scale(dpr,dpr);
+  const PAD={{top:30,right:60,bottom:50,left:70}};
+  const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
+  const n=RAW.heatmap_n;
+  const M=layerData().M_corner;
+
+  const flat=M.flat(), vMax=Math.max(...flat);
+  function valToColor(v) {{
+    const t=Math.sqrt(v/vMax);
+    return `rgb(${{Math.round(255*(1-t*0.85))}},${{Math.round(255*(1-t*0.72))}},${{Math.round(255*(1-t*0.1))}})`;
+  }}
+
+  ctx.clearRect(0,0,W,H);
+  const cellW=pw/n, cellH=ph/n;
+  for(let i=0;i<n;i++) for(let j=0;j<n;j++) {{
+    ctx.fillStyle=valToColor(M[i][j]);
+    ctx.fillRect(PAD.left+j*cellW, PAD.top+i*cellH, cellW, cellH);
+  }}
+  ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.lineWidth=0.5;
+  for(let i=0;i<=n;i++) {{
+    ctx.beginPath(); ctx.moveTo(PAD.left,PAD.top+i*cellH); ctx.lineTo(PAD.left+pw,PAD.top+i*cellH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD.left+i*cellW,PAD.top); ctx.lineTo(PAD.left+i*cellW,PAD.top+ph); ctx.stroke();
+  }}
+  const step=Math.max(1,Math.floor(n/10));
+  ctx.fillStyle='#666'; ctx.font='11px Georgia,serif';
+  for(let i=0;i<n;i+=step) {{
+    ctx.textAlign='right'; ctx.fillText(i,PAD.left-5,PAD.top+i*cellH+cellH/2+4);
+    ctx.textAlign='center'; ctx.fillText(i,PAD.left+i*cellW+cellW/2,PAD.top+ph+16);
+  }}
+  ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
+  ctx.fillText('j  (W_in RSV index)', PAD.left+pw/2, H-8);
+  ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('i  (W_out LSV index)',0,0); ctx.restore();
+  ctx.strokeStyle='#aaa'; ctx.lineWidth=1; ctx.strokeRect(PAD.left,PAD.top,pw,ph);
+
+  const cbX=PAD.left+pw+8, cbY=PAD.top, cbW=14, cbH=ph;
+  const grad=ctx.createLinearGradient(0,cbY,0,cbY+cbH);
+  grad.addColorStop(0,valToColor(vMax)); grad.addColorStop(1,valToColor(0));
+  ctx.fillStyle=grad; ctx.fillRect(cbX,cbY,cbW,cbH);
+  ctx.strokeStyle='#aaa'; ctx.lineWidth=1; ctx.strokeRect(cbX,cbY,cbW,cbH);
+  ctx.fillStyle='#666'; ctx.font='10px Georgia,serif'; ctx.textAlign='left';
+  ctx.fillText(fmtNum(vMax),cbX,cbY-2);
+  ctx.fillText('0',cbX,cbY+cbH+10);
+}}
+
+// ── Heatmap tooltip ───────────────────────────────────────────────────────────
+(function() {{
+  const tooltip = document.createElement('div');
+  tooltip.style.cssText = 'position:fixed;background:rgba(0,0,0,0.75);color:#fff;font:12px Georgia,serif;padding:4px 8px;border-radius:4px;pointer-events:none;display:none;z-index:999';
+  document.body.appendChild(tooltip);
+  hmCanvas.addEventListener('mousemove', e => {{
+    const rect=hmCanvas.getBoundingClientRect();
+    const mx=(e.clientX-rect.left)*(hmCanvas.width/rect.width/(window.devicePixelRatio||1));
+    const my=(e.clientY-rect.top)*(hmCanvas.height/rect.height/(window.devicePixelRatio||1));
+    const PAD={{top:30,right:60,bottom:50,left:70}};
+    const pw=hmCanvas.width/(window.devicePixelRatio||1)-PAD.left-PAD.right;
+    const ph=hmCanvas.height/(window.devicePixelRatio||1)-PAD.top-PAD.bottom;
+    const n=RAW.heatmap_n;
+    const ci=Math.floor((mx-PAD.left)/(pw/n));
+    const ri=Math.floor((my-PAD.top)/(ph/n));
+    if(ri>=0&&ri<n&&ci>=0&&ci<n) {{
+      tooltip.style.display='block';
+      tooltip.style.left=(e.clientX+14)+'px';
+      tooltip.style.top=(e.clientY-20)+'px';
+      tooltip.textContent=`i=${{ri}}, j=${{ci}}: ${{layerData().M_corner[ri][ci].toFixed(4)}}`;
+    }} else {{ tooltip.style.display='none'; }}
+  }});
+  hmCanvas.addEventListener('mouseleave', ()=>{{ tooltip.style.display='none'; }});
+}})();
+
+// ── 3. align_k ────────────────────────────────────────────────────────────────
+const alignCanvas = document.getElementById('align-canvas');
+
+function drawAlign() {{
+  const dpr=window.devicePixelRatio||1;
+  const W=alignCanvas.offsetWidth, H=alignCanvas.offsetHeight||420;
+  alignCanvas.width=W*dpr; alignCanvas.height=H*dpr;
+  const ctx=alignCanvas.getContext('2d'); ctx.scale(dpr,dpr);
+  const logX  =document.getElementById('align-logx').checked;
+  const logY  =document.getElementById('align-logy').checked;
+  const ratio =document.getElementById('align-ratio').checked;
+  const PAD={{top:30,right:30,bottom:50,left:80}};
+  const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
+  const ld=layerData();
+
+  const akFull=ld.align_k;
+  const maxKRaw=Math.max(1,Math.min(akFull.length,parseInt(document.getElementById('align-maxk').value)||akFull.length));
+  const ak=akFull.slice(0,maxKRaw);
+  const maxK=ak.length;
+  const n_ambient=ld.n_intermediate || RAW.n_intermediate || ld.n_rank;
+  const akRand=ak.map((_,i)=>(i+1)/n_ambient);
+
+  const plotAk  =ratio?ak.map((v,i)=>v/akRand[i]):ak;
+  const plotRand=ratio?ak.map(()=>1):akRand;
+
+  const allY=[...plotAk,...(ratio?[]:plotRand)].filter(v=>v>0);
+  let yMin=Math.min(...allY), yMax=Math.max(...allY);
+  if(logY) {{
+    yMin=Math.pow(10,Math.floor(Math.log10(yMin)));
+    yMax=Math.pow(10,Math.ceil(Math.log10(yMax)));
+  }} else {{ yMin=0; yMax=yMax*1.05; }}
+
+  function toX(k1) {{ return logX
+    ?PAD.left+Math.log10(k1)/Math.log10(maxK)*pw
+    :PAD.left+(k1-1)/(maxK-1)*pw; }}
+  function toY(v) {{ return logY
+    ?PAD.top+(1-(Math.log10(Math.max(v,1e-30))-Math.log10(yMin))/(Math.log10(yMax)-Math.log10(yMin)))*ph
+    :PAD.top+(1-(v-yMin)/(yMax-yMin))*ph; }}
+
+  ctx.clearRect(0,0,W,H);
+  drawGrid(ctx,PAD,pw,ph,
+    logX?logTicks(1,maxK):linTicks(1,maxK,8),
+    logY?logTicks(yMin,yMax):linTicks(yMin,yMax,6),
+    toX,toY);
+  drawAxes(ctx,PAD,pw,ph);
+
+  ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
+  ctx.fillText('k',PAD.left+pw/2,H-8);
+  ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(ratio?'alignₖ / random':'alignₖ',0,0); ctx.restore();
+
+  if(ratio) {{
+    const y1=toY(1);
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
+    ctx.beginPath(); ctx.moveTo(PAD.left,y1); ctx.lineTo(PAD.left+pw,y1); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#aaa'; ctx.font='11px Georgia,serif'; ctx.textAlign='left';
+    ctx.fillText('random (= 1)',PAD.left+4,y1-4);
+  }} else {{
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
+    ctx.beginPath();
+    plotRand.forEach((v,i)=>{{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#aaa'; ctx.font='11px Georgia,serif'; ctx.textAlign='left';
+    const li=Math.floor(maxK*0.6);
+    ctx.fillText('random',toX(li+1),toY(plotRand[li])-5);
+  }}
+
+  ctx.strokeStyle='#2266cc'; ctx.lineWidth=2;
+  ctx.beginPath();
+  plotAk.forEach((v,i)=>{{ const x=toX(i+1),y=toY(v); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); }});
   ctx.stroke();
 }}
 

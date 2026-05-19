@@ -156,19 +156,86 @@ def cmd_expt(args):
         run_fanin_fanout_alignment(args.model or "pythia-1b", args.layer, args.top_k)
 
     elif name == "fanout_fanin_overlap":
+        import numpy as np
         model = args.model or "pythia-1b"
         result = experiments.fanout_fanin_overlap(model, args.layer)
         layer = int(result["layer"])
         slug = f"fanout_fanin_overlap_{model}_layer{layer}"
+
+        # load random baselines and n_intermediate from spectra cache
+        rand_out, rand_in = None, None
+        n_intermediate_inferred = None
+        for mt in ["fan_out", "fan_in"]:
+            cached_name = f"spectra_all_layers_{model}_{mt}"
+            if results_exist(cached_name):
+                cached = load_results(cached_name)
+                if "matrix_shape" in cached:
+                    m, n = int(cached["matrix_shape"][0]), int(cached["matrix_shape"][1])
+                    if mt == "fan_out":
+                        n_intermediate_inferred = m  # fan_out is (intermediate, hidden)
+                    rand_cache = f"random_spectrum_{m}x{n}"
+                    if results_exist(rand_cache):
+                        r = load_results(rand_cache)
+                        if mt == "fan_out": rand_out = r["S_mean"].tolist()
+                        else:               rand_in  = r["S_mean"].tolist()
+
+        # patch n_intermediate into result if not already stored (old cache files lack it)
+        if "n_intermediate" not in result and n_intermediate_inferred is not None:
+            result = dict(result)
+            import numpy as np
+            result["n_intermediate"] = np.array(n_intermediate_inferred)
+
         render.write_overlap_page(
             slug=slug,
             title=f"{model} layer {layer} — W_out / W_in overlap",
             result=result,
+            random_out=rand_out,
+            random_in=rand_in,
+        )
+
+    elif name == "fanout_fanin_overlap_all_layers":
+        import numpy as np
+        model = args.model or "pythia-1b"
+
+        # load random baselines and n_intermediate from spectra cache
+        rand_out, rand_in = None, None
+        n_intermediate_inferred = None
+        for mt in ["fan_out", "fan_in"]:
+            cached_name = f"spectra_all_layers_{model}_{mt}"
+            if results_exist(cached_name):
+                cached = load_results(cached_name)
+                if "matrix_shape" in cached:
+                    m, n = int(cached["matrix_shape"][0]), int(cached["matrix_shape"][1])
+                    if mt == "fan_out":
+                        n_intermediate_inferred = m
+                    rand_cache = f"random_spectrum_{m}x{n}"
+                    if results_exist(rand_cache):
+                        r = load_results(rand_cache)
+                        if mt == "fan_out": rand_out = r["S_mean"].tolist()
+                        else:               rand_in  = r["S_mean"].tolist()
+
+        results = experiments.fanout_fanin_overlap_all_layers(model)
+
+        # patch n_intermediate into any layers that lack it (old cache files)
+        if n_intermediate_inferred is not None:
+            for layer_idx, result in results.items():
+                if "n_intermediate" not in result:
+                    results[layer_idx] = dict(result)
+                    results[layer_idx]["n_intermediate"] = np.array(n_intermediate_inferred)
+
+        slug = f"fanout_fanin_overlap_all_layers_{model}"
+        render.write_overlap_all_layers_page(
+            slug=slug,
+            title=f"{model} — W_out / W_in overlap, all layers",
+            results=results,
+            random_out=rand_out,
+            random_in=rand_in,
+            n_intermediate=n_intermediate_inferred,
         )
 
     else:
         print(f"Unknown experiment: {name}")
-        print("Available: singular_spectra_all_layers, midlayer_spectra_comparison, fanin_fanout_alignment")
+        print("Available: singular_spectra_all_layers, midlayer_spectra_comparison, fanin_fanout_alignment, fanout_fanin_overlap, fanout_fanin_overlap_all_layers")
         sys.exit(1)
 
 
