@@ -56,7 +56,7 @@ def _open_safetensors(model_dir: Path):
         shard_files = ["model.safetensors"]
 
     handles = [
-        safe_open(str(model_dir / f), framework="pt", device="cpu")
+        safe_open(str(model_dir / f), framework="np")
         for f in shard_files
     ]
     return handles
@@ -65,7 +65,7 @@ def _open_safetensors(model_dir: Path):
 def _find_tensor(handles, key: str) -> np.ndarray:
     for h in handles:
         if key in h.keys():
-            return h.get_tensor(key).float().numpy()
+            return h.get_tensor(key).astype("float32")
     raise KeyError(f"Tensor '{key}' not found in any shard")
 
 
