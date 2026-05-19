@@ -195,41 +195,52 @@ def write_interactive_spectra_page(
 <title>{title}</title>
 <style>
 {CSS}
-canvas {{ display: block; width: 100%; border: 1px solid #ddd; border-radius: 4px; background: #fff; }}
 .controls {{ margin: 16px 0 8px; }}
 .layer-checkboxes {{
   display: flex; flex-wrap: wrap; gap: 4px 10px;
-  margin: 10px 0 16px; font-size: 0.85em;
+  margin: 10px 0 12px; font-size: 0.85em;
 }}
 .layer-checkboxes label {{ display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }}
 .layer-checkboxes input {{ cursor: pointer; }}
 .cb-row {{ display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }}
-.cb-row label {{ display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.9em; }}
 .toggle-btn {{
   font-size: 0.8em; padding: 2px 8px; cursor: pointer;
   border: 1px solid #bbb; border-radius: 3px; background: #f0f0f0;
 }}
 .toggle-btn:hover {{ background: #e0e0e0; }}
 
-/* settings gear */
-.settings-wrap {{ position: relative; display: inline-block; margin-left: 12px; }}
-.settings-btn {{
-  font-size: 0.85em; padding: 3px 10px; cursor: pointer;
-  border: 1px solid #bbb; border-radius: 3px; background: #f5f5f5;
+/* plot wrapper + gear (mlp-sharpness style) */
+.plot-wrap {{
+  position: relative;
+  width: 100%; max-width: 750px;
+}}
+.plot-wrap canvas {{
+  display: block; width: 100%; height: 320px;
+  border: 1px solid #ddd; border-radius: 4px; background: #fff;
+}}
+.plot-gear {{
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px; padding: 0;
+  background: rgba(255,255,255,0.85);
+  border: 1px solid #ccc; border-radius: 4px;
+  cursor: pointer; font-size: 13px; line-height: 22px; text-align: center;
+  color: #555; opacity: 0; transition: opacity 0.15s; z-index: 10;
   user-select: none;
 }}
-.settings-btn:hover {{ background: #e8e8e8; }}
-.settings-menu {{
-  display: none; position: absolute; top: 100%; left: 0; z-index: 100;
-  background: #fff; border: 1px solid #ccc; border-radius: 4px;
-  padding: 10px 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.12);
-  min-width: 160px; margin-top: 4px;
+.plot-wrap:hover .plot-gear {{ opacity: 1; }}
+.plot-gear:hover {{ background: #fff; border-color: #999; color: #222; }}
+.gear-menu {{
+  position: absolute; top: 30px; right: 6px; z-index: 100;
+  background: #fff; border: 1px solid #ccc; border-radius: 5px;
+  padding: 6px 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  min-width: 170px; display: none;
 }}
-.settings-menu.open {{ display: block; }}
-.settings-menu label {{
-  display: flex; align-items: center; gap: 8px;
-  font-size: 0.88em; padding: 4px 0; cursor: pointer; white-space: nowrap;
+.gear-menu.open {{ display: block; }}
+.gear-menu label {{
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 2px; cursor: pointer; font-size: 0.88em; white-space: nowrap;
 }}
+.gear-menu label:hover {{ background: #f4f4f4; border-radius: 3px; }}
 </style>
 </head>
 <body>
@@ -243,30 +254,30 @@ canvas {{ display: block; width: 100%; border: 1px solid #ddd; border-radius: 4p
     <button class="toggle-btn" id="btn-all">all</button>
     <button class="toggle-btn" id="btn-none">none</button>
     <button class="toggle-btn" id="btn-every2">every 2nd</button>
-    <div class="settings-wrap">
-      <div class="settings-btn" id="settings-btn">⚙ settings</div>
-      <div class="settings-menu" id="settings-menu">
-        <label><input type="checkbox" id="opt-logy" checked> log y</label>
-        <label><input type="checkbox" id="opt-logx"> log x</label>
-        <label><input type="checkbox" id="opt-normy"> normalize (σ/σ₀)</label>
-        <label><input type="checkbox" id="opt-random" checked> random baseline</label>
-        <label><input type="checkbox" id="opt-mp" checked> M-P theory</label>
-      </div>
-    </div>
   </div>
   <div class="layer-checkboxes" id="layer-checkboxes"></div>
 </div>
 
-<canvas id="plot" height="520"></canvas>
+<div class="plot-wrap" id="plot-wrap">
+  <canvas id="plot"></canvas>
+  <div class="plot-gear" id="gear-btn">⚙</div>
+  <div class="gear-menu" id="gear-menu">
+    <label><input type="checkbox" id="opt-logy" checked> log y</label>
+    <label><input type="checkbox" id="opt-logx"> log x</label>
+    <label><input type="checkbox" id="opt-normy"> normalize (σ/σ₀)</label>
+    <label><input type="checkbox" id="opt-random" checked> random baseline</label>
+    <label><input type="checkbox" id="opt-mp" checked> M-P theory</label>
+  </div>
+</div>
 
 <script>
 const RAW = {data_json};
 
-// ── Color scale: rainbow by layer depth ──────────────────────────────────────
+// ── Color scale: red=early layers, violet=late ────────────────────────────────
 function layerColor(i, n) {{
   const t = i / Math.max(n - 1, 1);
-  // roygbiv: hue from 270 (violet) down to 0 (red), full saturation
-  const hue = Math.round((1 - t) * 270);
+  // roygbiv: hue 0 (red) → 270 (violet)
+  const hue = Math.round(t * 270);
   return `hsl(${{hue}}, 85%, 45%)`;
 }}
 
@@ -293,12 +304,12 @@ document.getElementById('btn-all').onclick = () => {{ layerKeys.forEach(i => che
 document.getElementById('btn-none').onclick = () => {{ layerKeys.forEach(i => checkboxes[i].checked = false); draw(); }};
 document.getElementById('btn-every2').onclick = () => {{ layerKeys.forEach((k,i) => checkboxes[k].checked = (i % 2 === 0)); draw(); }};
 
-// ── Settings menu ─────────────────────────────────────────────────────────────
-const settingsBtn = document.getElementById('settings-btn');
-const settingsMenu = document.getElementById('settings-menu');
-settingsBtn.addEventListener('click', e => {{ settingsMenu.classList.toggle('open'); e.stopPropagation(); }});
-document.addEventListener('click', () => settingsMenu.classList.remove('open'));
-settingsMenu.addEventListener('click', e => e.stopPropagation());
+// ── Gear menu (hover on plot, click to open/close) ───────────────────────────
+const gearBtn  = document.getElementById('gear-btn');
+const gearMenu = document.getElementById('gear-menu');
+gearBtn.addEventListener('click', e => {{ gearMenu.classList.toggle('open'); e.stopPropagation(); }});
+document.addEventListener('click', () => gearMenu.classList.remove('open'));
+gearMenu.addEventListener('click', e => e.stopPropagation());
 ['opt-logy','opt-logx','opt-normy','opt-random','opt-mp'].forEach(id =>
   document.getElementById(id).addEventListener('change', draw));
 
@@ -318,7 +329,7 @@ const canvas = document.getElementById('plot');
 function draw() {{
   const dpr = window.devicePixelRatio || 1;
   const W = canvas.offsetWidth;
-  const H = canvas.offsetHeight || 520;
+  const H = canvas.offsetHeight || 320;
   canvas.width  = W * dpr;
   canvas.height = H * dpr;
   const ctx = canvas.getContext('2d');
