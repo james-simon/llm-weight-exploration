@@ -418,14 +418,15 @@ function draw() {{
     yMin = Math.max(0, yMin - pad); yMax = yMax + pad;
   }}
 
-  function toX(i) {{
-    // always 1-indexed on log scale so log(0) never occurs
-    const xi = opts.logX ? i + 1 : i;
-    const x = opts.logX ? Math.log10(xi) : xi;
-    const xMinT = opts.logX ? Math.log10(1) : 0;
+  // dataToX: maps a 1-based index value to canvas x position
+  function dataToX(idx1) {{
+    const x = opts.logX ? Math.log10(idx1) : idx1;
+    const xMinT = opts.logX ? 0 : 1;  // log10(1)=0; linear starts at 1
     const xMaxT = opts.logX ? Math.log10(allX) : allX;
     return PAD.left + (x - xMinT) / (xMaxT - xMinT) * pw;
   }}
+  // toX: converts 0-based array index to canvas x (used when drawing series)
+  function toX(i) {{ return dataToX(i + 1); }}
   function toY(v) {{
     if (opts.logY) {{
       const ly = Math.log10(Math.max(v, 1e-30));
@@ -450,7 +451,7 @@ function draw() {{
 
   // Axis labels
   ctx.fillStyle = '#444'; ctx.font = '13px Georgia, serif'; ctx.textAlign = 'center';
-  ctx.fillText(opts.logX ? 'log index' : 'index', PAD.left + pw/2, H - 8);
+  ctx.fillText('index i', PAD.left + pw/2, H - 8);
   ctx.save(); ctx.translate(14, PAD.top + ph/2); ctx.rotate(-Math.PI/2);
   ctx.fillText(opts.normY ? 'σᵢ / σ₀' : 'σᵢ', 0, 0);
   ctx.restore();
@@ -502,10 +503,10 @@ function drawGrid(ctx, opts, PAD, pw, ph, xMin, xMax, yMin, yMax, toX, toY) {{
     ctx.fillText(fmtNum(v), PAD.left - 6, y + 4);
   }});
 
-  // X ticks
-  const xTicks = opts.logX ? logTicks(Math.max(xMin,1), xMax) : linTicks(xMin, xMax, 8);
+  // X ticks — tick values are 1-based indices, use dataToX
+  const xTicks = opts.logX ? logTicks(1, allX) : linTicks(1, allX, 8);
   xTicks.forEach(v => {{
-    const x = toX(v);
+    const x = dataToX(v);
     if (x < PAD.left || x > PAD.left + pw + 1) return;
     ctx.beginPath(); ctx.moveTo(x, PAD.top); ctx.lineTo(x, PAD.top + ph); ctx.stroke();
     ctx.textAlign = 'center';
