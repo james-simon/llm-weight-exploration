@@ -40,6 +40,57 @@ def singular_spectra_all_layers(model_name: str, matrix_type: str = "fan_out") -
     return spectra
 
 
+# ── SVD overlap: fan_out RSVs vs fan_in LSVs (neuron space) ──────────────────
+
+def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = None) -> dict:
+    """
+    For a given layer, compute the overlap matrix M[i,k] = <u_i^out, u_k^in>^2
+    where u_i^out are the LEFT singular vectors of fan_out (neuron space, cols of U_out)
+    and u_k^in are the RIGHT singular vectors of fan_in (neuron space, rows of Vh_in -> cols of Vh_in.T).
+
+    fan_out shape: (intermediate, hidden) -> U_out is (intermediate, rank): neuron-space LSVs
+    fan_in  shape: (hidden, intermediate) -> Vh_in is (rank, intermediate): neuron-space RSVs
+
+    top_k: only compute top-k x top-k submatrix (cheaper, still revealing).
+    """
+    n_layers = weights.get_num_layers(model_name)
+    if layer_idx is None:
+        layer_idx = n_layers // 2
+
+    name = f"fanout_fanin_overlap_{model_name}_layer{layer_idx}"
+    if top_k is not None:
+        name += f"_k{top_k}"
+
+    if svd.results_exist(name):
+        print(f"  [cached] {name}")
+        return svd.load_results(name)
+
+    print(f"  Computing {name} ...")
+    w = weights.load_mlp_weights(model_name, layer_idx)
+
+    # full SVD of both matrices
+    U_out, S_out, _   = np.linalg.svd(w["fan_out"], full_matrices=False)  # U_out: (intermediate, rank)
+    _,     S_in,  Vh_in = np.linalg.svd(w["fan_in"],  full_matrices=False)  # Vh_in: (rank, intermediate)
+
+    k = top_k if top_k is not None else S_out.shape[0]
+    U_out_k = U_out[:, :k]        # (intermediate, k) — fan_out LSVs in neuron space
+    V_in_k  = Vh_in[:k, :].T      # (intermediate, k) — fan_in  RSVs in neuron space
+
+    # overlap matrix: M[i,j] = <u_i^out, v_j^in>^2
+    M = (U_out_k.T @ V_in_k) ** 2  # (k, k)
+
+    result = {
+        "M":       M,
+        "S_out":   S_out,
+        "S_in":    S_in,
+        "top_k":   np.array(k),
+        "layer":   np.array(layer_idx),
+        "model":   np.array(model_name),
+    }
+    svd.save_results(name, result)
+    return result
+
+
 # ── Random baseline (Marchenko-Pastur) ───────────────────────────────────────
 
 def random_matrix_spectrum(m: int, n: int, n_samples: int = 5) -> dict:
