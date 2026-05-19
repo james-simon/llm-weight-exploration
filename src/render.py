@@ -586,7 +586,7 @@ function makeHistogram(S, edges) {{
   const counts = new Array(edges.length - 1).fill(0);
   S.forEach(v => {{
     let lo = 0, hi = edges.length - 1;
-    while (lo < hi - 1) {{ const mid = (lo+hi)>>1; (edges[mid] <= v ? lo : hi) = mid; }}
+    while (lo < hi - 1) {{ const mid = (lo+hi)>>1; if (edges[mid] <= v) lo = mid; else hi = mid; }}
     if (lo < counts.length) counts[lo]++;
   }});
   return counts;
