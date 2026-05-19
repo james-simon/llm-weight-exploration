@@ -89,14 +89,21 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
     # overlap matrix: M[i,j] = <u_i^out, v_j^in>^2
     M = (U_out_k.T @ V_in_k) ** 2  # (k, k)
 
+    # cos-sim of each singular vector with the all-ones direction (1/sqrt(N))
+    ones = np.ones(n_intermediate) / np.sqrt(n_intermediate)
+    cossim_out = U_out_k.T @ ones   # (k,) — one value per LSV of fan_out
+    cossim_in  = V_in_k.T  @ ones   # (k,) — one value per RSV of fan_in
+
     result = {
-        "M":            M,
-        "S_out":        S_out,
-        "S_in":         S_in,
-        "top_k":        np.array(k),
+        "M":              M,
+        "S_out":          S_out,
+        "S_in":           S_in,
+        "cossim_out":     cossim_out,
+        "cossim_in":      cossim_in,
+        "top_k":          np.array(k),
         "n_intermediate": np.array(n_intermediate),
-        "layer":        np.array(layer_idx),
-        "model":        np.array(model_name),
+        "layer":          np.array(layer_idx),
+        "model":          np.array(model_name),
     }
     svd.save_results(name, result)
     return result

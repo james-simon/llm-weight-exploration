@@ -908,11 +908,13 @@ document.getElementById('align-maxk').addEventListener('input', () => {{ saveSta
 function setupGear(btnId, menuId) {{
   const btn = document.getElementById(btnId);
   const menu = document.getElementById(menuId);
+  if (!btn || !menu) return;
   btn.addEventListener('click', e => {{ menu.classList.toggle('open'); e.stopPropagation(); }});
   menu.addEventListener('click', e => e.stopPropagation());
 }}
-setupGear('spec-gear-btn',  'spec-gear-menu');
-setupGear('align-gear-btn', 'align-gear-menu');
+setupGear('spec-gear-btn',   'spec-gear-menu');
+setupGear('align-gear-btn',  'align-gear-menu');
+setupGear('cossim-gear-btn', 'cossim-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -1271,6 +1273,8 @@ def write_overlap_all_layers_page(
             "M_corner":       M[:heatmap_n, :heatmap_n].tolist(),
             "n_rank":         n_rank,
             "n_intermediate": ni,
+            "cossim_out":     r["cossim_out"].tolist() if "cossim_out" in r else [],
+            "cossim_in":      r["cossim_in"].tolist()  if "cossim_in"  in r else [],
         }
 
     # use first layer's n_intermediate as fallback for random baseline
@@ -1373,12 +1377,7 @@ def write_overlap_all_layers_page(
   </div>
 </div>
 
-<div class="plot-label" id="heatmap-label">Overlap matrix M (top {heatmap_n}×{heatmap_n})</div>
-<div class="plot-wrap heatmap" id="heatmap-wrap">
-  <canvas id="heatmap-canvas"></canvas>
-</div>
-
-<div class="plot-label" id="align-label">align<sub>k</sub> = k⁻¹ Σ<sub>i,j≤k</sub> M<sub>ij</sub></div>
+<div class="plot-label">align<sub>k</sub> = k⁻¹ Σ<sub>i,j≤k</sub> M<sub>ij</sub></div>
 <div class="plot-wrap" id="align-wrap">
   <canvas id="align-canvas"></canvas>
   <div class="plot-gear" id="align-gear-btn">⚙</div>
@@ -1387,6 +1386,21 @@ def write_overlap_all_layers_page(
     <label><input type="checkbox" id="align-logy"> log y</label>
     <label><input type="checkbox" id="align-ratio"> show ratio (alignₖ / random)</label>
     <label style="gap:6px;">max k&nbsp;<input type="number" id="align-maxk" value="{first_n_rank}" min="1" max="{first_n_rank}" style="width:56px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
+  </div>
+</div>
+
+<div class="plot-label">Overlap matrix M (top {heatmap_n}×{heatmap_n})</div>
+<div class="plot-wrap heatmap" id="heatmap-wrap">
+  <canvas id="heatmap-canvas"></canvas>
+</div>
+
+<div class="plot-label">cos-sim of singular vectors with all-ones direction</div>
+<div class="plot-wrap" id="cossim-wrap">
+  <canvas id="cossim-canvas"></canvas>
+  <div class="plot-gear" id="cossim-gear-btn">⚙</div>
+  <div class="gear-menu" id="cossim-gear-menu">
+    <label><input type="checkbox" id="cossim-sq"> show cos²</label>
+    <label><input type="checkbox" id="cossim-logx"> log x</label>
   </div>
 </div>
 
@@ -1416,7 +1430,7 @@ function layerData() {{ return RAW.layers[activeLayer]; }}
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'overlap-all-{slug}';
-const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio'];
+const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio','cossim-sq','cossim-logx'];
 const OPT_DEFAULTS = {{'spec-logy': true}};
 
 function saveState() {{
@@ -1449,11 +1463,13 @@ document.getElementById('align-maxk').addEventListener('input', () => {{ saveSta
 function setupGear(btnId, menuId) {{
   const btn = document.getElementById(btnId);
   const menu = document.getElementById(menuId);
+  if (!btn || !menu) return;
   btn.addEventListener('click', e => {{ menu.classList.toggle('open'); e.stopPropagation(); }});
   menu.addEventListener('click', e => e.stopPropagation());
 }}
-setupGear('spec-gear-btn',  'spec-gear-menu');
-setupGear('align-gear-btn', 'align-gear-menu');
+setupGear('spec-gear-btn',   'spec-gear-menu');
+setupGear('align-gear-btn',  'align-gear-menu');
+setupGear('cossim-gear-btn', 'cossim-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -1725,7 +1741,84 @@ function drawAlign() {{
   ctx.stroke();
 }}
 
-function redraw() {{ drawSpectra(); drawHeatmap(); drawAlign(); }}
+// ── 4. Cos-sim scatter ────────────────────────────────────────────────────────
+const cossimCanvas = document.getElementById('cossim-canvas');
+
+function drawCossim() {{
+  const dpr=window.devicePixelRatio||1;
+  const W=cossimCanvas.offsetWidth, H=cossimCanvas.offsetHeight||420;
+  cossimCanvas.width=W*dpr; cossimCanvas.height=H*dpr;
+  const ctx=cossimCanvas.getContext('2d'); ctx.scale(dpr,dpr);
+  const sq   = document.getElementById('cossim-sq').checked;
+  const logX = document.getElementById('cossim-logx').checked;
+  const PAD={{top:30,right:30,bottom:50,left:70}};
+  const pw=W-PAD.left-PAD.right, ph=H-PAD.top-PAD.bottom;
+  const ld=layerData();
+
+  const raw_out = ld.cossim_out || [];
+  const raw_in  = ld.cossim_in  || [];
+  if (!raw_out.length && !raw_in.length) {{
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle='#aaa'; ctx.font='14px Georgia,serif'; ctx.textAlign='center';
+    ctx.fillText('(no data — recompute experiment)', W/2, H/2);
+    return;
+  }}
+
+  const vals_out = sq ? raw_out.map(v=>v*v) : raw_out;
+  const vals_in  = sq ? raw_in.map(v=>v*v)  : raw_in;
+  const n = Math.max(vals_out.length, vals_in.length);
+
+  const allVals = [...vals_out, ...vals_in];
+  const yMin_data=Math.min(...allVals), yMax_data=Math.max(...allVals);
+  const yPad=(yMax_data-yMin_data)*0.07||0.05;
+  const yMin=yMin_data-yPad, yMax=yMax_data+yPad;
+
+  function toX(i) {{
+    return logX
+      ? PAD.left+(i>0?Math.log10(i+1)/Math.log10(n):0)*pw
+      : PAD.left+i/(n-1||1)*pw;
+  }}
+  function toY(v) {{ return PAD.top+(1-(v-yMin)/(yMax-yMin))*ph; }}
+
+  ctx.clearRect(0,0,W,H);
+  const toXgrid=logX?(v=>PAD.left+Math.log10(Math.max(v,1))/Math.log10(n)*pw):(v=>PAD.left+v/(n-1||1)*pw);
+  drawGrid(ctx,PAD,pw,ph,
+    logX?logTicks(1,n):linTicks(0,n,8),
+    linTicks(yMin,yMax,6),
+    toXgrid,toY);
+  drawAxes(ctx,PAD,pw,ph);
+
+  const y0=toY(0);
+  if(y0>=PAD.top&&y0<=PAD.top+ph) {{
+    ctx.strokeStyle='#ccc'; ctx.lineWidth=1; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(PAD.left,y0); ctx.lineTo(PAD.left+pw,y0); ctx.stroke();
+    ctx.setLineDash([]);
+  }}
+
+  ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
+  ctx.fillText('singular vector index i', PAD.left+pw/2, H-8);
+  ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(sq?'cos²(u, 1̂)':'cos(u, 1̂)',0,0); ctx.restore();
+
+  const series=[
+    {{vals:vals_out, color:'#2266cc', label:'W_out LSVs'}},
+    {{vals:vals_in,  color:'#cc4422', label:'W_in RSVs'}},
+  ];
+  series.forEach((s,si)=>{{
+    ctx.fillStyle=s.color; ctx.globalAlpha=0.7;
+    s.vals.forEach((v,i)=>{{
+      const x=toX(i),y=toY(v);
+      ctx.beginPath(); ctx.arc(x,y,2.5,0,2*Math.PI); ctx.fill();
+    }});
+    ctx.globalAlpha=1;
+    const lx=PAD.left+pw-110, ly=PAD.top+16+si*18;
+    ctx.fillStyle=s.color; ctx.beginPath(); ctx.arc(lx,ly,4,0,2*Math.PI); ctx.fill();
+    ctx.font='12px Georgia,serif'; ctx.textAlign='left';
+    ctx.fillText(s.label,lx+8,ly+4);
+  }});
+}}
+
+function redraw() {{ drawSpectra(); drawAlign(); drawHeatmap(); drawCossim(); }}
 window.addEventListener('resize', redraw);
 redraw();
 </script>
