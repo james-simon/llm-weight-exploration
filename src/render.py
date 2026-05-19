@@ -266,6 +266,7 @@ def write_interactive_spectra_page(
     <label><input type="checkbox" id="opt-logy" checked> log y</label>
     <label><input type="checkbox" id="opt-logx"> log x</label>
     <label><input type="checkbox" id="opt-normy"> normalize (σ/σ₀)</label>
+    <label><input type="checkbox" id="opt-normmean"> normalize (mean σ = 1)</label>
     <label><input type="checkbox" id="opt-random" checked> random baseline</label>
     <label><input type="checkbox" id="opt-mp" checked> M-P theory</label>
   </div>
@@ -311,16 +312,17 @@ const gearMenu = document.getElementById('gear-menu');
 gearBtn.addEventListener('click', e => {{ gearMenu.classList.toggle('open'); e.stopPropagation(); }});
 document.addEventListener('click', () => gearMenu.classList.remove('open'));
 gearMenu.addEventListener('click', e => e.stopPropagation());
-['opt-logy','opt-logx','opt-normy','opt-random','opt-mp'].forEach(id =>
+['opt-logy','opt-logx','opt-normy','opt-normmean','opt-random','opt-mp'].forEach(id =>
   document.getElementById(id).addEventListener('change', draw));
 
 function getOpts() {{
   return {{
-    logY:   document.getElementById('opt-logy').checked,
-    logX:   document.getElementById('opt-logx').checked,
-    normY:  document.getElementById('opt-normy').checked,
-    random: document.getElementById('opt-random').checked,
-    mp:     document.getElementById('opt-mp').checked,
+    logY:     document.getElementById('opt-logy').checked,
+    logX:     document.getElementById('opt-logx').checked,
+    normY:    document.getElementById('opt-normy').checked,
+    normMean: document.getElementById('opt-normmean').checked,
+    random:   document.getElementById('opt-random').checked,
+    mp:       document.getElementById('opt-mp').checked,
   }};
 }}
 
@@ -341,18 +343,20 @@ function draw() {{
   const pw = W - PAD.left - PAD.right;
   const ph = H - PAD.top  - PAD.bottom;
 
+  function normalize(S) {{
+    if (opts.normY)    return S.map(v => v / S[0]);
+    if (opts.normMean) return S.map(v => v / (S.reduce((a,b) => a+b, 0) / S.length));
+    return S;
+  }}
+
   // Collect active series
   const series = [];
   layerKeys.forEach(i => {{
     if (!checkboxes[i].checked) return;
-    let S = RAW.layers[String(i)];
-    if (opts.normY) S = S.map(v => v / S[0]);
-    series.push({{ S, color: layerColor(i, RAW.n_layers), label: 'L'+i }});
+    series.push({{ S: normalize(RAW.layers[String(i)]), color: layerColor(i, RAW.n_layers), label: 'L'+i }});
   }});
   if (opts.random) {{
-    let S = RAW.random;
-    if (opts.normY) S = S.map(v => v / S[0]);
-    series.push({{ S, color: '#888', label: 'random', dash: [4,3] }});
+    series.push({{ S: normalize(RAW.random), color: '#888', label: 'random', dash: [4,3] }});
   }}
 
   if (series.length === 0) {{ ctx.clearRect(0, 0, W, H); return; }}
@@ -369,9 +373,11 @@ function draw() {{
   if (opts.mp) {{
     let mpMax = RAW.mp_max, mpMin = RAW.mp_min;
     if (opts.normY) {{
-      // normalize by the median of random S[0] across samples — approximate by random[0]
       const r0 = RAW.random[0];
       mpMax /= r0; mpMin /= r0;
+    }} else if (opts.normMean) {{
+      const rMean = RAW.random.reduce((a,b) => a+b, 0) / RAW.random.length;
+      mpMax /= rMean; mpMin /= rMean;
     }}
     mpLines.push({{ y: mpMax, color: '#d44', label: 'MP max', dash: [6,3] }});
     mpLines.push({{ y: mpMin, color: '#44d', label: 'MP min', dash: [6,3] }});
@@ -389,9 +395,11 @@ function draw() {{
   }}
 
   function toX(i) {{
-    const x = opts.logX ? Math.log10(Math.max(i, 1)) : i;
-    const xMinT = opts.logX ? Math.log10(Math.max(xMin, 1)) : xMin;
-    const xMaxT = opts.logX ? Math.log10(xMax) : xMax;
+    // always 1-indexed on log scale so log(0) never occurs
+    const xi = opts.logX ? i + 1 : i;
+    const x = opts.logX ? Math.log10(xi) : xi;
+    const xMinT = opts.logX ? Math.log10(1) : 0;
+    const xMaxT = opts.logX ? Math.log10(allX) : allX;
     return PAD.left + (x - xMinT) / (xMaxT - xMinT) * pw;
   }}
   function toY(v) {{
