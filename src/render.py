@@ -272,6 +272,21 @@ def write_interactive_spectra_page(
   </div>
 </div>
 
+<div style="margin-top: 18px;">
+  <div style="font-size:0.85em; color:#888; margin-bottom:6px; letter-spacing:0.3px;">Histogram (ESD)</div>
+  <div class="plot-wrap" id="hist-wrap">
+    <canvas id="hist"></canvas>
+    <div class="plot-gear" id="hist-gear-btn">⚙</div>
+    <div class="gear-menu" id="hist-gear-menu">
+      <label><input type="checkbox" id="hist-logy"> log y</label>
+      <label><input type="checkbox" id="hist-logx"> log x (σ)</label>
+      <label><input type="checkbox" id="hist-density" checked> density (area=1)</label>
+      <label><input type="checkbox" id="hist-random" checked> random baseline</label>
+      <label style="gap:6px;">bins&nbsp;<input type="number" id="hist-bins" value="60" min="10" max="300" style="width:48px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
+    </div>
+  </div>
+</div>
+
 <script>
 const RAW = {data_json};
 
@@ -300,21 +315,23 @@ layerKeys.forEach(i => {{
   cbContainer.appendChild(label);
 }});
 
-// ── Gear menu (hover on plot, click to open/close) ───────────────────────────
+// ── Spectrum gear menu ────────────────────────────────────────────────────────
 const gearBtn  = document.getElementById('gear-btn');
 const gearMenu = document.getElementById('gear-menu');
 gearBtn.addEventListener('click', e => {{ gearMenu.classList.toggle('open'); e.stopPropagation(); }});
-document.addEventListener('click', () => gearMenu.classList.remove('open'));
+document.addEventListener('click', () => {{ gearMenu.classList.remove('open'); histGearMenu.classList.remove('open'); }});
 gearMenu.addEventListener('click', e => e.stopPropagation());
 
 // ── localStorage persistence ──────────────────────────────────────────────────
 const STORAGE_KEY = 'spectra-state-{slug}';
-const OPT_IDS = ['opt-logy','opt-logx','opt-normy','opt-normmean','opt-random','opt-mp'];
-const OPT_DEFAULTS = {{ 'opt-logy': true, 'opt-random': true, 'opt-mp': true }};
+const OPT_IDS = ['opt-logy','opt-logx','opt-normy','opt-normmean','opt-random','opt-mp',
+                 'hist-logy','hist-logx','hist-density','hist-random'];
+const OPT_DEFAULTS = {{ 'opt-logy': true, 'opt-random': true, 'opt-mp': true, 'hist-density': true, 'hist-random': true }};
 
 function saveState() {{
   const state = {{}};
   OPT_IDS.forEach(id => state[id] = document.getElementById(id).checked);
+  state['hist-bins'] = document.getElementById('hist-bins').value;
   layerKeys.forEach(i => state['layer-'+i] = checkboxes[i].checked);
   try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }} catch(e) {{}}
 }}
@@ -326,18 +343,28 @@ function loadState() {{
     const el = document.getElementById(id);
     el.checked = saved ? (saved[id] ?? (OPT_DEFAULTS[id] ?? false)) : (OPT_DEFAULTS[id] ?? false);
   }});
+  if (saved?.['hist-bins']) document.getElementById('hist-bins').value = saved['hist-bins'];
   layerKeys.forEach(i => {{
     checkboxes[i].checked = saved ? (saved['layer-'+i] ?? true) : true;
   }});
 }}
 
+function redraw() {{ draw(); drawHist(); }}
+
 loadState();
-OPT_IDS.forEach(id => document.getElementById(id).addEventListener('change', () => {{ saveState(); draw(); }}));
-layerKeys.forEach(i => checkboxes[i].addEventListener('change', () => {{ saveState(); draw(); }}));
-// override the toggle buttons to also save
-document.getElementById('btn-all').onclick    = () => {{ layerKeys.forEach(i => checkboxes[i].checked = true);              saveState(); draw(); }};
-document.getElementById('btn-none').onclick   = () => {{ layerKeys.forEach(i => checkboxes[i].checked = false);             saveState(); draw(); }};
-document.getElementById('btn-every2').onclick = () => {{ layerKeys.forEach((k,i) => checkboxes[k].checked = (i%2===0));     saveState(); draw(); }};
+OPT_IDS.forEach(id => document.getElementById(id).addEventListener('change', () => {{ saveState(); redraw(); }}));
+document.getElementById('hist-bins').addEventListener('input', () => {{ saveState(); drawHist(); }});
+layerKeys.forEach(i => checkboxes[i].addEventListener('change', () => {{ saveState(); redraw(); }}));
+document.getElementById('btn-all').onclick    = () => {{ layerKeys.forEach(i => checkboxes[i].checked = true);          saveState(); redraw(); }};
+document.getElementById('btn-none').onclick   = () => {{ layerKeys.forEach(i => checkboxes[i].checked = false);         saveState(); redraw(); }};
+document.getElementById('btn-every2').onclick = () => {{ layerKeys.forEach((k,i) => checkboxes[k].checked=(i%2===0));   saveState(); redraw(); }};
+
+// histogram gear
+const histGearBtn  = document.getElementById('hist-gear-btn');
+const histGearMenu = document.getElementById('hist-gear-menu');
+histGearBtn.addEventListener('click', e => {{ histGearMenu.classList.toggle('open'); e.stopPropagation(); }});
+document.addEventListener('click', () => histGearMenu.classList.remove('open'));
+histGearMenu.addEventListener('click', e => e.stopPropagation());
 
 function getOpts() {{
   return {{
@@ -539,8 +566,175 @@ function fmtNum(v) {{
   return v.toPrecision(2);
 }}
 
-window.addEventListener('resize', draw);
-draw();
+window.addEventListener('resize', redraw);
+redraw();
+
+// ── Histogram drawing ─────────────────────────────────────────────────────────
+const histCanvas = document.getElementById('hist');
+
+function getHistOpts() {{
+  return {{
+    logY:    document.getElementById('hist-logy').checked,
+    logX:    document.getElementById('hist-logx').checked,
+    density: document.getElementById('hist-density').checked,
+    random:  document.getElementById('hist-random').checked,
+    nBins:   Math.max(10, Math.min(300, parseInt(document.getElementById('hist-bins').value) || 60)),
+  }};
+}}
+
+function makeHistogram(S, edges) {{
+  const counts = new Array(edges.length - 1).fill(0);
+  S.forEach(v => {{
+    let lo = 0, hi = edges.length - 1;
+    while (lo < hi - 1) {{ const mid = (lo+hi)>>1; (edges[mid] <= v ? lo : hi) = mid; }}
+    if (lo < counts.length) counts[lo]++;
+  }});
+  return counts;
+}}
+
+function drawHist() {{
+  const dpr = window.devicePixelRatio || 1;
+  const W = histCanvas.offsetWidth;
+  const H = histCanvas.offsetHeight || 544;
+  histCanvas.width  = W * dpr;
+  histCanvas.height = H * dpr;
+  const ctx = histCanvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const opts = getHistOpts();
+  const specOpts = getOpts();  // read normalization from the spectrum plot
+  const PAD = {{ top: 30, right: 30, bottom: 50, left: 70 }};
+  const pw = W - PAD.left - PAD.right;
+  const ph = H - PAD.top  - PAD.bottom;
+
+  // collect active raw S arrays (apply same normalization as spectrum plot)
+  function normalize(S) {{
+    if (specOpts.normY)    return S.map(v => v / S[0]);
+    if (specOpts.normMean) return S.map(v => v / (S.reduce((a,b)=>a+b,0)/S.length));
+    return S;
+  }}
+
+  const activeLayers = layerKeys.filter(i => checkboxes[i].checked);
+  const allSeries = activeLayers.map(i => ({{
+    S: normalize(RAW.layers[String(i)]), color: layerColor(i, RAW.n_layers)
+  }}));
+  if (opts.random) allSeries.push({{ S: normalize(RAW.random), color: '#999', dash: [4,3] }});
+
+  if (allSeries.length === 0) {{ ctx.clearRect(0, 0, W, H); return; }}
+
+  // global value range across all active series
+  const allVals = allSeries.flatMap(s => s.S);
+  const vMin = Math.min(...allVals), vMax = Math.max(...allVals);
+
+  // build bin edges (linear or log in σ space)
+  const n = opts.nBins;
+  const edges = [];
+  if (opts.logX) {{
+    const lMin = Math.log10(Math.max(vMin, 1e-10)), lMax = Math.log10(vMax);
+    for (let k = 0; k <= n; k++) edges.push(Math.pow(10, lMin + (lMax - lMin) * k / n));
+  }} else {{
+    for (let k = 0; k <= n; k++) edges.push(vMin + (vMax - vMin) * k / n);
+  }}
+  const binWidths = edges.slice(0,-1).map((e,i) => edges[i+1] - e);
+  const binCenters = edges.slice(0,-1).map((e,i) => (e + edges[i+1]) / 2);
+
+  // compute histograms
+  const histSeries = allSeries.map(s => {{
+    const counts = makeHistogram(s.S, edges);
+    const total = s.S.length;
+    const vals = opts.density
+      ? counts.map((c,i) => c / (total * binWidths[i]))
+      : counts.map(c => c);
+    return {{ vals, color: s.color, dash: s.dash }};
+  }});
+
+  // axis ranges
+  const allY = histSeries.flatMap(s => s.vals.filter(v => v > 0));
+  if (allY.length === 0) {{ ctx.clearRect(0, 0, W, H); return; }}
+  let yMin = 0, yMax = Math.max(...allY);
+  let xMin = edges[0], xMax = edges[edges.length-1];
+
+  if (opts.logY) {{
+    yMin = Math.pow(10, Math.floor(Math.log10(Math.min(...allY.filter(v=>v>0)))));
+    yMax = Math.pow(10, Math.ceil(Math.log10(yMax)));
+  }} else {{
+    yMax *= 1.05;
+  }}
+
+  function toX(v) {{
+    if (opts.logX) {{
+      const lv = Math.log10(Math.max(v, 1e-30));
+      return PAD.left + (lv - Math.log10(xMin)) / (Math.log10(xMax) - Math.log10(xMin)) * pw;
+    }}
+    return PAD.left + (v - xMin) / (xMax - xMin) * pw;
+  }}
+  function toY(v) {{
+    if (opts.logY) {{
+      const ly = Math.log10(Math.max(v, 1e-30));
+      return PAD.top + (1 - (ly - Math.log10(yMin)) / (Math.log10(yMax) - Math.log10(yMin))) * ph;
+    }}
+    return PAD.top + (1 - (v - yMin) / (yMax - yMin)) * ph;
+  }}
+
+  ctx.clearRect(0, 0, W, H);
+
+  // grid
+  ctx.save();
+  ctx.strokeStyle = '#eee'; ctx.lineWidth = 1; ctx.fillStyle = '#888';
+  ctx.font = '11px Georgia,serif';
+  const yTicks = opts.logY ? logTicks(yMin, yMax) : linTicks(yMin, yMax, 6);
+  yTicks.forEach(v => {{
+    const y = toY(v); if (y < PAD.top || y > PAD.top+ph+1) return;
+    ctx.beginPath(); ctx.moveTo(PAD.left,y); ctx.lineTo(PAD.left+pw,y); ctx.stroke();
+    ctx.textAlign='right'; ctx.fillText(fmtNum(v), PAD.left-6, y+4);
+  }});
+  const xTicks = opts.logX ? logTicks(xMin, xMax) : linTicks(xMin, xMax, 7);
+  xTicks.forEach(v => {{
+    const x = toX(v); if (x < PAD.left || x > PAD.left+pw+1) return;
+    ctx.beginPath(); ctx.moveTo(x,PAD.top); ctx.lineTo(x,PAD.top+ph); ctx.stroke();
+    ctx.textAlign='center'; ctx.fillText(fmtNum(v), x, PAD.top+ph+16);
+  }});
+  ctx.restore();
+
+  // axes
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(PAD.left, PAD.top); ctx.lineTo(PAD.left, PAD.top+ph);
+  ctx.lineTo(PAD.left+pw, PAD.top+ph); ctx.stroke();
+
+  // axis labels
+  ctx.fillStyle = '#444'; ctx.font = '13px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText('σ', PAD.left + pw/2, H - 8);
+  ctx.save(); ctx.translate(14, PAD.top+ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(opts.density ? 'density' : 'count', 0, 0);
+  ctx.restore();
+
+  // draw step-line histograms back-to-front (random last so it's on top)
+  [...histSeries].reverse().forEach(s => {{
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = s.dash ? 1.5 : 1.8;
+    ctx.globalAlpha = s.dash ? 0.7 : 0.65;
+    if (s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+    ctx.beginPath();
+    let started = false;
+    s.vals.forEach((v, k) => {{
+      if (opts.logY && v <= 0) {{ started = false; return; }}
+      const x0 = toX(edges[k]), x1 = toX(edges[k+1]);
+      const y  = toY(opts.logY ? Math.max(v, yMin) : v);
+      const yb = toY(opts.logY ? yMin : 0);
+      if (!started) {{ ctx.moveTo(x0, yb); started = true; }}
+      ctx.lineTo(x0, y); ctx.lineTo(x1, y);
+    }});
+    // close to baseline
+    if (started) {{
+      const lastX = toX(edges[n]);
+      ctx.lineTo(lastX, toY(opts.logY ? yMin : 0));
+    }}
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }});
+}}
 </script>
 </body>
 </html>"""
