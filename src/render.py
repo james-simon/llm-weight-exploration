@@ -292,7 +292,6 @@ layerKeys.forEach(i => {{
   const cb = document.createElement('input');
   cb.type = 'checkbox'; cb.checked = true;
   cb.style.accentColor = layerColor(i, RAW.n_layers);
-  cb.addEventListener('change', draw);
   checkboxes[i] = cb;
   const swatch = document.createElement('span');
   swatch.style.cssText = `display:inline-block;width:12px;height:12px;border-radius:2px;background:${{layerColor(i, RAW.n_layers)}}`;
@@ -301,19 +300,44 @@ layerKeys.forEach(i => {{
   cbContainer.appendChild(label);
 }});
 
-// ── Toggle buttons ────────────────────────────────────────────────────────────
-document.getElementById('btn-all').onclick = () => {{ layerKeys.forEach(i => checkboxes[i].checked = true); draw(); }};
-document.getElementById('btn-none').onclick = () => {{ layerKeys.forEach(i => checkboxes[i].checked = false); draw(); }};
-document.getElementById('btn-every2').onclick = () => {{ layerKeys.forEach((k,i) => checkboxes[k].checked = (i % 2 === 0)); draw(); }};
-
 // ── Gear menu (hover on plot, click to open/close) ───────────────────────────
 const gearBtn  = document.getElementById('gear-btn');
 const gearMenu = document.getElementById('gear-menu');
 gearBtn.addEventListener('click', e => {{ gearMenu.classList.toggle('open'); e.stopPropagation(); }});
 document.addEventListener('click', () => gearMenu.classList.remove('open'));
 gearMenu.addEventListener('click', e => e.stopPropagation());
-['opt-logy','opt-logx','opt-normy','opt-normmean','opt-random','opt-mp'].forEach(id =>
-  document.getElementById(id).addEventListener('change', draw));
+
+// ── localStorage persistence ──────────────────────────────────────────────────
+const STORAGE_KEY = 'spectra-state-{slug}';
+const OPT_IDS = ['opt-logy','opt-logx','opt-normy','opt-normmean','opt-random','opt-mp'];
+const OPT_DEFAULTS = {{ 'opt-logy': true, 'opt-random': true, 'opt-mp': true }};
+
+function saveState() {{
+  const state = {{}};
+  OPT_IDS.forEach(id => state[id] = document.getElementById(id).checked);
+  layerKeys.forEach(i => state['layer-'+i] = checkboxes[i].checked);
+  try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }} catch(e) {{}}
+}}
+
+function loadState() {{
+  let saved = null;
+  try {{ saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); }} catch(e) {{}}
+  OPT_IDS.forEach(id => {{
+    const el = document.getElementById(id);
+    el.checked = saved ? (saved[id] ?? (OPT_DEFAULTS[id] ?? false)) : (OPT_DEFAULTS[id] ?? false);
+  }});
+  layerKeys.forEach(i => {{
+    checkboxes[i].checked = saved ? (saved['layer-'+i] ?? true) : true;
+  }});
+}}
+
+loadState();
+OPT_IDS.forEach(id => document.getElementById(id).addEventListener('change', () => {{ saveState(); draw(); }}));
+layerKeys.forEach(i => checkboxes[i].addEventListener('change', () => {{ saveState(); draw(); }}));
+// override the toggle buttons to also save
+document.getElementById('btn-all').onclick    = () => {{ layerKeys.forEach(i => checkboxes[i].checked = true);              saveState(); draw(); }};
+document.getElementById('btn-none').onclick   = () => {{ layerKeys.forEach(i => checkboxes[i].checked = false);             saveState(); draw(); }};
+document.getElementById('btn-every2').onclick = () => {{ layerKeys.forEach((k,i) => checkboxes[k].checked = (i%2===0));     saveState(); draw(); }};
 
 function getOpts() {{
   return {{
