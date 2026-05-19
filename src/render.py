@@ -273,7 +273,7 @@ def write_interactive_spectra_page(
 </div>
 
 <div style="margin-top: 18px;">
-  <div style="font-size:0.85em; color:#888; margin-bottom:6px; letter-spacing:0.3px;">Histogram (ESD)</div>
+  <div style="font-size:0.85em; color:#888; margin-bottom:6px; letter-spacing:0.3px;">Singular value distribution</div>
   <div class="plot-wrap" id="hist-wrap">
     <canvas id="hist"></canvas>
     <div class="plot-gear" id="hist-gear-btn">⚙</div>
