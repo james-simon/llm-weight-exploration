@@ -19,8 +19,8 @@ def singular_spectra_all_layers(model_name: str, matrix_type: str = "fan_out") -
     if svd.results_exist(name):
         print(f"  [cached] {name}")
         data = svd.load_results(name)
-        n_layers = weights.get_num_layers(model_name)
-        return {i: data[f"layer_{i}"] for i in range(n_layers)}
+        layer_keys = [k for k in data.keys() if k.startswith("layer_")]
+        return {int(k.split("_")[1]): data[k] for k in layer_keys}
 
     print(f"  Computing {name} ...")
     all_weights = weights.load_all_mlp_weights(model_name)
@@ -33,6 +33,9 @@ def singular_spectra_all_layers(model_name: str, matrix_type: str = "fan_out") -
     save_data = {f"layer_{i}": S for i, S in spectra.items()}
     save_data["model"] = np.array(model_name)
     save_data["matrix_type"] = np.array(matrix_type)
+    # save matrix shape so render can compute random baseline without weights
+    sample_w = all_weights[0][matrix_type]
+    save_data["matrix_shape"] = np.array(sample_w.shape)
     svd.save_results(name, save_data)
     return spectra
 

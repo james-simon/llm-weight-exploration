@@ -32,15 +32,9 @@ def run_singular_spectra_all_layers(model: str, matrix_type: str):
     import numpy as np
     spectra = experiments.singular_spectra_all_layers(model, matrix_type)
 
-    # get shape from first layer to compute random baseline
-    first_S = next(iter(spectra.values()))
-    sample_layer = next(iter(spectra.keys()))
-
-    # load the actual weight to get matrix shape
-    from src.weights import load_mlp_weights
-    w = load_mlp_weights(model, sample_layer)
-    mat = w[matrix_type]
-    m, n = mat.shape
+    # read matrix shape from cached result (saved at compute time)
+    cached = load_results(f"spectra_all_layers_{model}_{matrix_type}")
+    m, n = int(cached["matrix_shape"][0]), int(cached["matrix_shape"][1])
 
     random_result = experiments.random_matrix_spectrum(m, n)
 

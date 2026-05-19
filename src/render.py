@@ -212,10 +212,11 @@ def write_interactive_spectra_page(
 /* plot wrapper + gear (mlp-sharpness style) */
 .plot-wrap {{
   position: relative;
-  width: 100%; max-width: 750px;
+  width: 100%; max-width: 975px;
+  margin: 0 auto;
 }}
 .plot-wrap canvas {{
-  display: block; width: 100%; height: 320px;
+  display: block; width: 100%; height: 544px;
   border: 1px solid #ddd; border-radius: 4px; background: #fff;
 }}
 .plot-gear {{
@@ -329,7 +330,7 @@ const canvas = document.getElementById('plot');
 function draw() {{
   const dpr = window.devicePixelRatio || 1;
   const W = canvas.offsetWidth;
-  const H = canvas.offsetHeight || 320;
+  const H = canvas.offsetHeight || 544;
   canvas.width  = W * dpr;
   canvas.height = H * dpr;
   const ctx = canvas.getContext('2d');
