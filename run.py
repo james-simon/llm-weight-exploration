@@ -72,7 +72,8 @@ def cmd_render(args):
             from src.weights import get_num_layers
             if results_exist(result_name):
                 data = load_results(result_name)
-                n_layers = get_num_layers(model)
+                layer_keys = [k for k in data.keys() if k.startswith("layer_")]
+                n_layers = len(layer_keys)
                 spectra = {i: data[f"layer_{i}"] for i in range(n_layers)}
                 fig = plot.plot_spectra_all_layers(spectra, model, matrix_type)
                 sections.append({
