@@ -47,8 +47,7 @@ def run_singular_spectra_all_layers(model: str, matrix_type: str):
         title=title,
         figures=figs,
         description=desc,
-        grid_cols=4,
-        fig_labels=labels,
+        grid_cols=2,
     )
 
 

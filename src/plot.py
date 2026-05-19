@@ -25,13 +25,12 @@ def _colors(n):
 def plot_single_spectrum(S: np.ndarray, layer_idx: int, model_name: str, matrix_type: str = "fan_out") -> plt.Figure:
     """One panel: singular spectrum for a single layer."""
     rcsetup()
-    fig, ax = plt.subplots(figsize=(4, 3))
-    ax.plot(S, lw=1.2, color="#2266cc")
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(S, lw=1.5, color="#2266cc")
     ax.set_yscale("log")
-    ax.set_xlabel("Index", fontsize=12)
-    ax.set_ylabel(r"$\sigma_i$", fontsize=12)
-    ax.set_title(f"Layer {layer_idx}", fontsize=14)
-    ax.tick_params(labelsize=10)
+    ax.set_xlabel("Index")
+    ax.set_ylabel(r"$\sigma_i$")
+    ax.set_title(f"Layer {layer_idx}")
     fig.tight_layout()
     return fig
 
