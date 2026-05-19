@@ -150,3 +150,358 @@ def write_master_index(registry: list = None):
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     MASTER_INDEX.write_text(_html_skeleton("LLM Weight Exploration", body))
     print(f"  Updated {MASTER_INDEX}")
+
+
+def write_interactive_spectra_page(
+    slug: str,
+    title: str,
+    spectra: dict,           # {layer_idx: np.ndarray of singular values}
+    random_S: "np.ndarray",  # singular values of a random matrix same shape
+    mp_min: float,
+    mp_max: float,
+    description: str = "",
+) -> Path:
+    """
+    Write a fully interactive spectra viewer page.
+    - Checkboxes to toggle layers on/off
+    - One big canvas plot with depth-colored lines
+    - Random matrix baseline (numerical + MP theory)
+    - Settings menu: log x, log y, normalize y
+    """
+    import numpy as np
+
+    # Serialize all data as JSON for embedding
+    layers_data = {str(k): v.tolist() for k, v in sorted(spectra.items())}
+    n_layers = len(layers_data)
+    random_data = random_S.tolist()
+
+    data_json = json.dumps({
+        "layers": layers_data,
+        "random": random_data,
+        "mp_min": float(mp_min),
+        "mp_max": float(mp_max),
+        "n_layers": n_layers,
+    })
+
+    out_dir = EXPTS_DIR / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    desc_html = f"<p>{description}</p>" if description else ""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+{CSS}
+canvas {{ display: block; width: 100%; border: 1px solid #ddd; border-radius: 4px; background: #fff; }}
+.controls {{ margin: 16px 0 8px; }}
+.layer-checkboxes {{
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  margin: 10px 0 16px; font-size: 0.85em;
+}}
+.layer-checkboxes label {{ display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; }}
+.layer-checkboxes input {{ cursor: pointer; }}
+.cb-row {{ display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }}
+.cb-row label {{ display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.9em; }}
+.toggle-btn {{
+  font-size: 0.8em; padding: 2px 8px; cursor: pointer;
+  border: 1px solid #bbb; border-radius: 3px; background: #f0f0f0;
+}}
+.toggle-btn:hover {{ background: #e0e0e0; }}
+
+/* settings gear */
+.settings-wrap {{ position: relative; display: inline-block; margin-left: 12px; }}
+.settings-btn {{
+  font-size: 0.85em; padding: 3px 10px; cursor: pointer;
+  border: 1px solid #bbb; border-radius: 3px; background: #f5f5f5;
+  user-select: none;
+}}
+.settings-btn:hover {{ background: #e8e8e8; }}
+.settings-menu {{
+  display: none; position: absolute; top: 100%; left: 0; z-index: 100;
+  background: #fff; border: 1px solid #ccc; border-radius: 4px;
+  padding: 10px 14px; box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  min-width: 160px; margin-top: 4px;
+}}
+.settings-menu.open {{ display: block; }}
+.settings-menu label {{
+  display: flex; align-items: center; gap: 8px;
+  font-size: 0.88em; padding: 4px 0; cursor: pointer; white-space: nowrap;
+}}
+</style>
+</head>
+<body>
+<a class="back" href="../../index.html">← Back to experiments</a>
+<h1>{title}</h1>
+{desc_html}
+
+<div class="controls">
+  <div class="cb-row">
+    <strong style="font-size:0.9em">Layers:</strong>
+    <button class="toggle-btn" id="btn-all">all</button>
+    <button class="toggle-btn" id="btn-none">none</button>
+    <button class="toggle-btn" id="btn-every2">every 2nd</button>
+    <div class="settings-wrap">
+      <div class="settings-btn" id="settings-btn">⚙ settings</div>
+      <div class="settings-menu" id="settings-menu">
+        <label><input type="checkbox" id="opt-logy" checked> log y</label>
+        <label><input type="checkbox" id="opt-logx"> log x</label>
+        <label><input type="checkbox" id="opt-normy"> normalize (σ/σ₀)</label>
+        <label><input type="checkbox" id="opt-random" checked> random baseline</label>
+        <label><input type="checkbox" id="opt-mp" checked> M-P theory</label>
+      </div>
+    </div>
+  </div>
+  <div class="layer-checkboxes" id="layer-checkboxes"></div>
+</div>
+
+<canvas id="plot" height="520"></canvas>
+
+<script>
+const RAW = {data_json};
+
+// ── Color scale: rainbow by layer depth ──────────────────────────────────────
+function layerColor(i, n) {{
+  const t = i / Math.max(n - 1, 1);
+  // roygbiv: hue from 270 (violet) down to 0 (red), full saturation
+  const hue = Math.round((1 - t) * 270);
+  return `hsl(${{hue}}, 85%, 45%)`;
+}}
+
+// ── Build checkboxes ──────────────────────────────────────────────────────────
+const cbContainer = document.getElementById('layer-checkboxes');
+const layerKeys = Object.keys(RAW.layers).map(Number).sort((a,b) => a-b);
+const checkboxes = {{}};
+layerKeys.forEach(i => {{
+  const label = document.createElement('label');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.checked = true;
+  cb.style.accentColor = layerColor(i, RAW.n_layers);
+  cb.addEventListener('change', draw);
+  checkboxes[i] = cb;
+  const swatch = document.createElement('span');
+  swatch.style.cssText = `display:inline-block;width:12px;height:12px;border-radius:2px;background:${{layerColor(i, RAW.n_layers)}}`;
+  label.appendChild(cb); label.appendChild(swatch);
+  label.append(` L${{i}}`);
+  cbContainer.appendChild(label);
+}});
+
+// ── Toggle buttons ────────────────────────────────────────────────────────────
+document.getElementById('btn-all').onclick = () => {{ layerKeys.forEach(i => checkboxes[i].checked = true); draw(); }};
+document.getElementById('btn-none').onclick = () => {{ layerKeys.forEach(i => checkboxes[i].checked = false); draw(); }};
+document.getElementById('btn-every2').onclick = () => {{ layerKeys.forEach((k,i) => checkboxes[k].checked = (i % 2 === 0)); draw(); }};
+
+// ── Settings menu ─────────────────────────────────────────────────────────────
+const settingsBtn = document.getElementById('settings-btn');
+const settingsMenu = document.getElementById('settings-menu');
+settingsBtn.addEventListener('click', e => {{ settingsMenu.classList.toggle('open'); e.stopPropagation(); }});
+document.addEventListener('click', () => settingsMenu.classList.remove('open'));
+settingsMenu.addEventListener('click', e => e.stopPropagation());
+['opt-logy','opt-logx','opt-normy','opt-random','opt-mp'].forEach(id =>
+  document.getElementById(id).addEventListener('change', draw));
+
+function getOpts() {{
+  return {{
+    logY:   document.getElementById('opt-logy').checked,
+    logX:   document.getElementById('opt-logx').checked,
+    normY:  document.getElementById('opt-normy').checked,
+    random: document.getElementById('opt-random').checked,
+    mp:     document.getElementById('opt-mp').checked,
+  }};
+}}
+
+// ── Canvas drawing ────────────────────────────────────────────────────────────
+const canvas = document.getElementById('plot');
+
+function draw() {{
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth;
+  const H = canvas.offsetHeight || 520;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const opts = getOpts();
+  const PAD = {{ top: 30, right: 30, bottom: 50, left: 70 }};
+  const pw = W - PAD.left - PAD.right;
+  const ph = H - PAD.top  - PAD.bottom;
+
+  // Collect active series
+  const series = [];
+  layerKeys.forEach(i => {{
+    if (!checkboxes[i].checked) return;
+    let S = RAW.layers[String(i)];
+    if (opts.normY) S = S.map(v => v / S[0]);
+    series.push({{ S, color: layerColor(i, RAW.n_layers), label: 'L'+i }});
+  }});
+  if (opts.random) {{
+    let S = RAW.random;
+    if (opts.normY) S = S.map(v => v / S[0]);
+    series.push({{ S, color: '#888', label: 'random', dash: [4,3] }});
+  }}
+
+  if (series.length === 0) {{ ctx.clearRect(0, 0, W, H); return; }}
+
+  // Axis ranges
+  const allY = series.flatMap(s => s.S.filter(v => v > 0));
+  const allX = series.map(s => s.S.length).reduce((a,b) => Math.max(a,b), 1);
+  let xMin = opts.logX ? 1 : 0, xMax = allX;
+  let yMin = Math.min(...allY), yMax = Math.max(...allY);
+  if (opts.logY) {{ yMin = Math.max(yMin, 1e-10); }}
+
+  // Marchenko-Pastur lines (in same y-units)
+  const mpLines = [];
+  if (opts.mp) {{
+    let mpMax = RAW.mp_max, mpMin = RAW.mp_min;
+    if (opts.normY) {{
+      // normalize by the median of random S[0] across samples — approximate by random[0]
+      const r0 = RAW.random[0];
+      mpMax /= r0; mpMin /= r0;
+    }}
+    mpLines.push({{ y: mpMax, color: '#d44', label: 'MP max', dash: [6,3] }});
+    mpLines.push({{ y: mpMin, color: '#44d', label: 'MP min', dash: [6,3] }});
+    yMax = Math.max(yMax, mpMax);
+    yMin = Math.min(yMin, mpMin > 0 ? mpMin : yMin);
+  }}
+
+  // Add padding to y range
+  if (opts.logY) {{
+    yMin = Math.pow(10, Math.floor(Math.log10(yMin)));
+    yMax = Math.pow(10, Math.ceil(Math.log10(yMax)));
+  }} else {{
+    const pad = (yMax - yMin) * 0.05;
+    yMin = Math.max(0, yMin - pad); yMax = yMax + pad;
+  }}
+
+  function toX(i) {{
+    const x = opts.logX ? Math.log10(Math.max(i, 1)) : i;
+    const xMinT = opts.logX ? Math.log10(Math.max(xMin, 1)) : xMin;
+    const xMaxT = opts.logX ? Math.log10(xMax) : xMax;
+    return PAD.left + (x - xMinT) / (xMaxT - xMinT) * pw;
+  }}
+  function toY(v) {{
+    if (opts.logY) {{
+      const ly = Math.log10(Math.max(v, 1e-30));
+      const lyMin = Math.log10(yMin), lyMax = Math.log10(yMax);
+      return PAD.top + (1 - (ly - lyMin) / (lyMax - lyMin)) * ph;
+    }}
+    return PAD.top + (1 - (v - yMin) / (yMax - yMin)) * ph;
+  }}
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Grid lines
+  ctx.strokeStyle = '#eee'; ctx.lineWidth = 1;
+  drawGrid(ctx, opts, PAD, pw, ph, xMin, xMax, yMin, yMax, toX, toY);
+
+  // Axes
+  ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(PAD.left, PAD.top); ctx.lineTo(PAD.left, PAD.top + ph);
+  ctx.lineTo(PAD.left + pw, PAD.top + ph);
+  ctx.stroke();
+
+  // Axis labels
+  ctx.fillStyle = '#444'; ctx.font = '13px Georgia, serif'; ctx.textAlign = 'center';
+  ctx.fillText(opts.logX ? 'log index' : 'index', PAD.left + pw/2, H - 8);
+  ctx.save(); ctx.translate(14, PAD.top + ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(opts.normY ? 'σᵢ / σ₀' : 'σᵢ', 0, 0);
+  ctx.restore();
+
+  // M-P horizontal lines
+  mpLines.forEach(line => {{
+    const y = toY(line.y);
+    if (y < PAD.top || y > PAD.top + ph) return;
+    ctx.strokeStyle = line.color; ctx.lineWidth = 1.5;
+    ctx.setLineDash(line.dash);
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + pw, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = line.color; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'left';
+    ctx.fillText(line.label, PAD.left + 4, y - 3);
+  }});
+
+  // Data series
+  series.forEach(s => {{
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = s.dash ? 1.5 : 1.8;
+    ctx.globalAlpha = s.dash ? 0.85 : 0.75;
+    if (s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+    ctx.beginPath();
+    let started = false;
+    s.S.forEach((v, i) => {{
+      if (v <= 0) return;
+      const x = toX(i), y = toY(v);
+      if (!started) {{ ctx.moveTo(x, y); started = true; }}
+      else ctx.lineTo(x, y);
+    }});
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+  }});
+}}
+
+function drawGrid(ctx, opts, PAD, pw, ph, xMin, xMax, yMin, yMax, toX, toY) {{
+  ctx.save();
+  ctx.strokeStyle = '#eee'; ctx.lineWidth = 1; ctx.fillStyle = '#888';
+  ctx.font = '11px Georgia,serif';
+
+  // Y ticks
+  const yTicks = opts.logY ? logTicks(yMin, yMax) : linTicks(yMin, yMax, 6);
+  yTicks.forEach(v => {{
+    const y = toY(v);
+    if (y < PAD.top || y > PAD.top + ph + 1) return;
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + pw, y); ctx.stroke();
+    ctx.textAlign = 'right';
+    ctx.fillText(fmtNum(v), PAD.left - 6, y + 4);
+  }});
+
+  // X ticks
+  const xTicks = opts.logX ? logTicks(Math.max(xMin,1), xMax) : linTicks(xMin, xMax, 8);
+  xTicks.forEach(v => {{
+    const x = toX(v);
+    if (x < PAD.left || x > PAD.left + pw + 1) return;
+    ctx.beginPath(); ctx.moveTo(x, PAD.top); ctx.lineTo(x, PAD.top + ph); ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.round(v), x, PAD.top + ph + 16);
+  }});
+  ctx.restore();
+}}
+
+function linTicks(lo, hi, n) {{
+  const step = niceStep((hi - lo) / n);
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-10; v += step) ticks.push(v);
+  return ticks;
+}}
+function logTicks(lo, hi) {{
+  const ticks = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {{
+    [1, 2, 5].forEach(m => {{ const v = m * Math.pow(10, e); if (v >= lo && v <= hi) ticks.push(v); }});
+  }}
+  return ticks;
+}}
+function niceStep(rough) {{
+  const e = Math.pow(10, Math.floor(Math.log10(rough)));
+  const f = rough / e;
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * e;
+}}
+function fmtNum(v) {{
+  if (Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0)) return v.toExponential(1);
+  if (Number.isInteger(v) || Math.abs(v) >= 10) return String(Math.round(v));
+  return v.toPrecision(2);
+}}
+
+window.addEventListener('resize', draw);
+draw();
+</script>
+</body>
+</html>"""
+
+    path = out_dir / "index.html"
+    path.write_text(html)
+    print(f"  Wrote {path}")
+    _register_experiment(slug, title, description, path)
+    return path

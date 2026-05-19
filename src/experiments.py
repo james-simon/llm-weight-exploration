@@ -37,6 +37,41 @@ def singular_spectra_all_layers(model_name: str, matrix_type: str = "fan_out") -
     return spectra
 
 
+# ── Random baseline (Marchenko-Pastur) ───────────────────────────────────────
+
+def random_matrix_spectrum(m: int, n: int, n_samples: int = 5) -> dict:
+    """
+    Compute singular spectra of iid Gaussian matrices of shape (m, n),
+    averaged over n_samples draws. Also returns the theoretical MP bulk edges.
+    Entries ~ N(0, 1/m) to match the typical init scale.
+    Results keyed by shape so they cache across experiments.
+    """
+    name = f"random_spectrum_{m}x{n}"
+    if svd.results_exist(name):
+        return svd.load_results(name)
+
+    print(f"  Computing random baseline {m}x{n} ...")
+    spectra = []
+    for _ in range(n_samples):
+        W = np.random.randn(m, n) / np.sqrt(m)
+        spectra.append(np.linalg.svd(W, compute_uv=False))
+    S_mean = np.mean(spectra, axis=0)
+
+    gamma = n / m
+    mp_max = (1 + np.sqrt(gamma))   # in units of 1 (matrix scaled by 1/sqrt(m))
+    mp_min = (1 - np.sqrt(gamma))
+
+    result = {
+        "S_mean": S_mean,
+        "mp_max": np.array(mp_max),
+        "mp_min": np.array(mp_min),
+        "m": np.array(m),
+        "n": np.array(n),
+    }
+    svd.save_results(name, result)
+    return result
+
+
 # ── Experiment B ─────────────────────────────────────────────────────────────
 
 def midlayer_spectra_comparison(

@@ -29,25 +29,37 @@ Path("results").mkdir(exist_ok=True)
 # ── Experiment runners ────────────────────────────────────────────────────────
 
 def run_singular_spectra_all_layers(model: str, matrix_type: str):
+    import numpy as np
     spectra = experiments.singular_spectra_all_layers(model, matrix_type)
 
-    figs = [plot.plot_single_spectrum(S, layer_idx, model, matrix_type)
-            for layer_idx, S in sorted(spectra.items())]
-    labels = [f"Layer {i}" for i in sorted(spectra.keys())]
+    # get shape from first layer to compute random baseline
+    first_S = next(iter(spectra.values()))
+    sample_layer = next(iter(spectra.keys()))
 
-    n = len(figs)
+    # load the actual weight to get matrix shape
+    from src.weights import load_mlp_weights
+    w = load_mlp_weights(model, sample_layer)
+    mat = w[matrix_type]
+    m, n = mat.shape
+
+    random_result = experiments.random_matrix_spectrum(m, n)
+
+    n_layers = len(spectra)
     slug = f"singular_spectra_all_layers_{model}_{matrix_type}"
-    title = f"{model} — {matrix_type} singular spectra, all {n} layers"
-    desc = (f"Singular value spectrum of the MLP {matrix_type} weight matrix "
-            f"for each of the {n} layers in {model}. "
-            f"Matrix shape: {list(spectra.values())[0].shape[0]} singular values per layer.")
+    title = f"{model} — {matrix_type} singular spectra, all {n_layers} layers"
+    desc = (f"Singular value spectra of the MLP {matrix_type} weight matrix "
+            f"({m}×{n}) for each of the {n_layers} layers in {model}. "
+            f"Dashed gray: random iid Gaussian baseline. "
+            f"Dashed red/blue lines: Marchenko-Pastur bulk edges.")
 
-    render.write_experiment_page(
+    render.write_interactive_spectra_page(
         slug=slug,
         title=title,
-        figures=figs,
+        spectra=spectra,
+        random_S=random_result["S_mean"],
+        mp_min=float(random_result["mp_min"]),
+        mp_max=float(random_result["mp_max"]),
         description=desc,
-        grid_cols=2,
     )
 
 
@@ -102,7 +114,6 @@ def cmd_render(_args):
         slug = entry["slug"]
 
         if slug.startswith("singular_spectra_all_layers_"):
-            # parse model and matrix_type from slug
             parts = slug[len("singular_spectra_all_layers_"):]
             for mt in ["fan_out", "fan_in"]:
                 if parts.endswith(f"_{mt}"):
