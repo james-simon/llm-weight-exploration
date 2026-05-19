@@ -20,6 +20,22 @@ def _colors(n):
     return cm.viridis(np.linspace(0.1, 0.9, n))
 
 
+# ── Single layer spectrum ─────────────────────────────────────────────────────
+
+def plot_single_spectrum(S: np.ndarray, layer_idx: int, model_name: str, matrix_type: str = "fan_out") -> plt.Figure:
+    """One panel: singular spectrum for a single layer."""
+    rcsetup()
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.plot(S, lw=1.2, color="#2266cc")
+    ax.set_yscale("log")
+    ax.set_xlabel("Index", fontsize=12)
+    ax.set_ylabel(r"$\sigma_i$", fontsize=12)
+    ax.set_title(f"Layer {layer_idx}", fontsize=14)
+    ax.tick_params(labelsize=10)
+    fig.tight_layout()
+    return fig
+
+
 # ── Plot A ────────────────────────────────────────────────────────────────────
 
 def plot_spectra_all_layers(spectra: dict, model_name: str, matrix_type: str = "fan_out") -> plt.Figure:

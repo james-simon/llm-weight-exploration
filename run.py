@@ -1,11 +1,11 @@
 """
-CLI for running experiments and rendering the results page.
+CLI for running experiments and rendering the results webpage.
 
 Usage:
-  python run.py expt singular_spectra_all_layers --model pythia-70m
+  python run.py expt singular_spectra_all_layers --model pythia-1b
   python run.py expt midlayer_spectra_comparison
-  python run.py expt fanin_fanout_alignment --model pythia-70m --layer 3
-  python run.py render
+  python run.py expt fanin_fanout_alignment --model pythia-1b --layer 8
+  python run.py render          # re-render all registered experiment pages
   python run.py serve [--port 8000]
 """
 
@@ -17,39 +17,133 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+
 sys.path.insert(0, str(Path(__file__).parent))
 from src import experiments, plot, render
+from src.svd import results_exist, load_results
 from src.weights import PYTHIA_MODELS
 
-Path("plots").mkdir(exist_ok=True)
 Path("results").mkdir(exist_ok=True)
 
+
+# ── Experiment runners ────────────────────────────────────────────────────────
+
+def run_singular_spectra_all_layers(model: str, matrix_type: str):
+    spectra = experiments.singular_spectra_all_layers(model, matrix_type)
+
+    figs = [plot.plot_single_spectrum(S, layer_idx, model, matrix_type)
+            for layer_idx, S in sorted(spectra.items())]
+    labels = [f"Layer {i}" for i in sorted(spectra.keys())]
+
+    n = len(figs)
+    slug = f"singular_spectra_all_layers_{model}_{matrix_type}"
+    title = f"{model} — {matrix_type} singular spectra, all {n} layers"
+    desc = (f"Singular value spectrum of the MLP {matrix_type} weight matrix "
+            f"for each of the {n} layers in {model}. "
+            f"Matrix shape: {list(spectra.values())[0].shape[0]} singular values per layer.")
+
+    render.write_experiment_page(
+        slug=slug,
+        title=title,
+        figures=figs,
+        description=desc,
+        grid_cols=4,
+        fig_labels=labels,
+    )
+
+
+def run_midlayer_spectra_comparison(models: list, matrix_type: str):
+    spectra = experiments.midlayer_spectra_comparison(models, matrix_type)
+
+    fig = plot.plot_midlayer_comparison(spectra, matrix_type)
+    slug = f"midlayer_spectra_comparison_{matrix_type}"
+    title = f"Mid-layer {matrix_type} spectra — Pythia model comparison"
+    desc = ("Singular value spectrum of the middle-layer MLP weight matrix "
+            "for each Pythia model size, normalized for comparison.")
+
+    render.write_experiment_page(
+        slug=slug,
+        title=title,
+        figures=[fig],
+        description=desc,
+        grid_cols=1,
+    )
+
+
+def run_fanin_fanout_alignment(model: str, layer: int, top_k: int):
+    result = experiments.fanin_fanout_alignment(model, layer, top_k)
+    layer_idx = int(result["layer"])
+
+    fig = plot.plot_fanin_fanout_alignment(result)
+    slug = f"fanin_fanout_alignment_{model}_layer{layer_idx}"
+    title = f"{model} layer {layer_idx} — fan-in / fan-out alignment"
+    desc = (f"SVD alignment analysis between the fan-out and fan-in MLP weight matrices "
+            f"at layer {layer_idx} of {model}. "
+            f"Principal angles computed between top-{top_k} singular subspaces.")
+
+    render.write_experiment_page(
+        slug=slug,
+        title=title,
+        figures=[fig],
+        description=desc,
+        grid_cols=1,
+    )
+
+
+# ── Re-render all registered experiments ─────────────────────────────────────
+
+def cmd_render(_args):
+    registry = render._load_registry()
+    if not registry:
+        print("No registered experiments. Run some experiments first.")
+        return
+
+    print(f"Re-rendering {len(registry)} experiment(s)...")
+    for entry in registry:
+        slug = entry["slug"]
+
+        if slug.startswith("singular_spectra_all_layers_"):
+            # parse model and matrix_type from slug
+            parts = slug[len("singular_spectra_all_layers_"):]
+            for mt in ["fan_out", "fan_in"]:
+                if parts.endswith(f"_{mt}"):
+                    model = parts[: -(len(mt) + 1)]
+                    run_singular_spectra_all_layers(model, mt)
+                    break
+
+        elif slug.startswith("midlayer_spectra_comparison_"):
+            mt = slug[len("midlayer_spectra_comparison_"):]
+            run_midlayer_spectra_comparison(PYTHIA_MODELS, mt)
+
+        elif slug.startswith("fanin_fanout_alignment_"):
+            # can't easily re-derive args from slug alone; re-run from cached results
+            result_name = slug  # slug matches result name
+            if results_exist(result_name):
+                result = load_results(result_name)
+                fig = plot.plot_fanin_fanout_alignment(result)
+                render.write_experiment_page(
+                    slug=slug,
+                    title=entry["title"],
+                    figures=[fig],
+                    description=entry.get("description", ""),
+                    grid_cols=1,
+                )
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
 
 def cmd_expt(args):
     name = args.name
 
     if name == "singular_spectra_all_layers":
-        model = args.model or "pythia-70m"
-        spectra = experiments.singular_spectra_all_layers(model, args.matrix_type)
-        fig = plot.plot_spectra_all_layers(spectra, model, args.matrix_type)
-        fig.savefig(f"plots/spectra_all_layers_{model}_{args.matrix_type}.png", bbox_inches="tight")
-        print(f"Saved plot.")
+        run_singular_spectra_all_layers(args.model or "pythia-1b", args.matrix_type)
 
     elif name == "midlayer_spectra_comparison":
         models = args.models.split(",") if args.models else PYTHIA_MODELS
-        spectra = experiments.midlayer_spectra_comparison(models, args.matrix_type)
-        fig = plot.plot_midlayer_comparison(spectra, args.matrix_type)
-        fig.savefig(f"plots/midlayer_comparison_{args.matrix_type}.png", bbox_inches="tight")
-        print(f"Saved plot.")
+        run_midlayer_spectra_comparison(models, args.matrix_type)
 
     elif name == "fanin_fanout_alignment":
-        model = args.model or "pythia-70m"
-        layer = args.layer  # None means middle layer
-        result = experiments.fanin_fanout_alignment(model, layer, args.top_k)
-        layer_str = str(result["layer"])
-        fig = plot.plot_fanin_fanout_alignment(result)
-        fig.savefig(f"plots/alignment_{model}_layer{layer_str}.png", bbox_inches="tight")
-        print(f"Saved plot.")
+        run_fanin_fanout_alignment(args.model or "pythia-1b", args.layer, args.top_k)
 
     else:
         print(f"Unknown experiment: {name}")
@@ -57,79 +151,10 @@ def cmd_expt(args):
         sys.exit(1)
 
 
-def cmd_render(args):
-    """Regenerate index.html from all cached results."""
-    import matplotlib
-    matplotlib.use("Agg")
-
-    sections = []
-
-    # Experiment A: all-layer spectra for each model that has cached results
-    for model in PYTHIA_MODELS:
-        for matrix_type in ["fan_out", "fan_in"]:
-            result_name = f"spectra_all_layers_{model}_{matrix_type}"
-            from src.svd import results_exist, load_results
-            from src.weights import get_num_layers
-            if results_exist(result_name):
-                data = load_results(result_name)
-                layer_keys = [k for k in data.keys() if k.startswith("layer_")]
-                n_layers = len(layer_keys)
-                spectra = {i: data[f"layer_{i}"] for i in range(n_layers)}
-                fig = plot.plot_spectra_all_layers(spectra, model, matrix_type)
-                sections.append({
-                    "title": f"[A] {model} — {matrix_type} spectra, all layers",
-                    "fig": fig,
-                })
-
-    # Experiment B: mid-layer comparison
-    for matrix_type in ["fan_out", "fan_in"]:
-        available = [m for m in PYTHIA_MODELS
-                     if results_exist(f"spectra_all_layers_{m}_{matrix_type}") or
-                        any(results_exist(f"midlayer_comparison_{s}_{matrix_type}")
-                            for s in ["_".join(m2.split('-')[1] for m2 in PYTHIA_MODELS)])]
-        # simpler: just check the dedicated midlayer cache
-        from src.svd import results_exist as re
-        cache_name = f"midlayer_comparison_{'_'.join(m.split('-')[1] for m in PYTHIA_MODELS)}_{matrix_type}"
-        if re(cache_name):
-            from src.svd import load_results as lr
-            data = lr(cache_name)
-            spectra = {m: data[m] for m in PYTHIA_MODELS if m in data}
-            if spectra:
-                fig = plot.plot_midlayer_comparison(spectra, matrix_type)
-                sections.append({
-                    "title": f"[B] Mid-layer {matrix_type} spectra — all model sizes",
-                    "fig": fig,
-                })
-
-    # Experiment C: fan-in / fan-out alignment
-    import re as re_module
-    results_dir = Path("results")
-    if results_dir.exists():
-        for npz in sorted(results_dir.glob("fanin_fanout_alignment_*.npz")):
-            result_name = npz.stem
-            from src.svd import load_results as lr
-            result = lr(result_name)
-            fig = plot.plot_fanin_fanout_alignment(result)
-            model = str(result["model"])
-            layer = int(result["layer"])
-            sections.append({
-                "title": f"[C] {model} layer {layer} — fan-in/fan-out alignment",
-                "fig": fig,
-            })
-
-    if not sections:
-        print("No cached results found. Run some experiments first.")
-        return
-
-    render.write_page(sections)
-    print(f"Rendered {len(sections)} section(s) to web/index.html")
-
-
 def cmd_serve(args):
-    port = args.port
     os.chdir(Path(__file__).parent / "web")
-    print(f"Serving at http://localhost:{port}  (Ctrl-C to stop)")
-    http.server.test(HandlerClass=http.server.SimpleHTTPRequestHandler, port=port)
+    print(f"Serving at http://localhost:{args.port}  (Ctrl-C to stop)")
+    http.server.test(HandlerClass=http.server.SimpleHTTPRequestHandler, port=args.port)
 
 
 def main():
@@ -138,21 +163,19 @@ def main():
 
     p_expt = sub.add_parser("expt")
     p_expt.add_argument("name")
-    p_expt.add_argument("--model")
-    p_expt.add_argument("--models")
+    p_expt.add_argument("--model", default=None)
+    p_expt.add_argument("--models", default=None)
     p_expt.add_argument("--layer", type=int, default=None)
     p_expt.add_argument("--top-k", type=int, default=32)
     p_expt.add_argument("--matrix-type", default="fan_out", choices=["fan_out", "fan_in"])
 
-    p_render = sub.add_parser("render")
+    sub.add_parser("render")
 
     p_serve = sub.add_parser("serve")
     p_serve.add_argument("--port", type=int, default=8000)
 
     args = parser.parse_args()
-    if args.cmd == "expt":   cmd_expt(args)
-    elif args.cmd == "render": cmd_render(args)
-    elif args.cmd == "serve":  cmd_serve(args)
+    {"expt": cmd_expt, "render": cmd_render, "serve": cmd_serve}[args.cmd](args)
 
 
 if __name__ == "__main__":
