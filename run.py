@@ -15,9 +15,14 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
 sys.path.insert(0, str(Path(__file__).parent))
 from src import experiments, plot, render
 from src.weights import PYTHIA_MODELS
+
+Path("plots").mkdir(exist_ok=True)
+Path("results").mkdir(exist_ok=True)
 
 
 def cmd_expt(args):
