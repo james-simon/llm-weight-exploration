@@ -218,6 +218,7 @@ RAW.layer_indices.forEach(li => {
       b.classList.toggle('active', +b.dataset.layer === li));
     saveState();
     redraw();
+    fetchAndDrawSvHist();
   });
   selectorEl.appendChild(btn);
 });
