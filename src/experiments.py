@@ -78,13 +78,13 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
     w = weights.load_mlp_weights(model_name, layer_idx)
 
     # full SVD of both matrices
-    U_out, S_out, _   = np.linalg.svd(w["fan_out"], full_matrices=False)  # U_out: (intermediate, rank)
-    _,     S_in,  Vh_in = np.linalg.svd(w["fan_in"],  full_matrices=False)  # Vh_in: (rank, intermediate)
+    U_out, S_out, Vh_out = np.linalg.svd(w["fan_out"], full_matrices=False)  # U_out:(int,rank) Vh_out:(rank,hid)
+    U_in,  S_in,  Vh_in  = np.linalg.svd(w["fan_in"],  full_matrices=False)  # U_in:(hid,rank)  Vh_in:(rank,int)
 
     n_intermediate = w["fan_out"].shape[0]  # ambient neuron-space dimension (e.g. 8192)
     k = top_k if top_k is not None else S_out.shape[0]
-    U_out_k = U_out[:, :k]        # (intermediate, k) — fan_out LSVs in neuron space
-    V_in_k  = Vh_in[:k, :].T      # (intermediate, k) — fan_in  RSVs in neuron space
+    U_out_k = U_out[:, :k]        # (intermediate, k) — W_up LSVs in neuron space
+    V_in_k  = Vh_in[:k, :].T      # (intermediate, k) — W_down RSVs in neuron space
 
     # overlap matrix: M[i,j] = <u_i^out, v_j^in>^2
     M = (U_out_k.T @ V_in_k) ** 2  # (k, k)
@@ -104,6 +104,13 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
         "n_intermediate": np.array(n_intermediate),
         "layer":          np.array(layer_idx),
         "model":          np.array(model_name),
+        # singular vectors — stored as float32 to keep file size reasonable
+        # W_up (fan_out, shape int×hid): LSVs in neuron space, RSVs in hidden space
+        # W_down (fan_in, shape hid×int): LSVs in hidden space, RSVs in neuron space
+        "U_up":    U_out[:, :k].astype(np.float32),    # (n_intermediate, k)
+        "Vh_up":   Vh_out[:k, :].astype(np.float32),   # (k, n_hidden)
+        "U_down":  U_in[:, :k].astype(np.float32),     # (n_hidden, k)
+        "Vh_down": Vh_in[:k, :].astype(np.float32),    # (k, n_intermediate)
     }
     svd.save_results(name, result)
     return result

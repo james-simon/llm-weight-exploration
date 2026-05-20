@@ -844,8 +844,8 @@ def write_overlap_page(
 <h1>{title}</h1>
 <p style="color:#555;font-size:0.95em">
   Layer {layer} of {model}.
-  M<sub>ik</sub> = ⟨u<sub>i</sub><sup>out</sup>, v<sub>k</sub><sup>in</sup>⟩²
-  where u<sup>out</sup> are LSVs of W<sub>out</sub> and v<sup>in</sup> are RSVs of W<sub>in</sub>, both in neuron space.
+  M<sub>ik</sub> = ⟨u<sub>i</sub><sup>up</sup>, v<sub>k</sub><sup>down</sup>⟩²
+  where u<sup>up</sup> are LSVs of W<sub>up</sub> and v<sup>down</sup> are RSVs of W<sub>down</sub>, both in neuron space.
 </p>
 
 <div class="plot-label">Singular spectra</div>
@@ -915,6 +915,7 @@ function setupGear(btnId, menuId) {{
 setupGear('spec-gear-btn',   'spec-gear-menu');
 setupGear('align-gear-btn',  'align-gear-menu');
 setupGear('cossim-gear-btn', 'cossim-gear-menu');
+setupGear('svhist-gear-btn', 'svhist-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -984,8 +985,8 @@ function drawSpectra() {{
   }}
 
   const series = [
-    {{S: RAW.S_out,      color:'#2266cc', label:'W_out'}},
-    {{S: RAW.S_in,       color:'#cc4422', label:'W_in',    dash:[5,3]}},
+    {{S: RAW.S_out,      color:'#2266cc', label:'W_up'}},
+    {{S: RAW.S_in,       color:'#cc4422', label:'W_down',  dash:[5,3]}},
     ...(RAW.S_rand_out.length ? [{{S: RAW.S_rand_out, color:'#888',   label:'random', dash:[4,2]}}] : []),
   ];
   const normalized = series.map(s => ({{...s, S: normS(s.S)}}));
@@ -1089,9 +1090,9 @@ function drawHeatmap() {{
 
   // axis labels
   ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
-  ctx.fillText('j  (W_in RSV index)', PAD.left+pw/2, H-8);
+  ctx.fillText('j  (W_down RSV index)', PAD.left+pw/2, H-8);
   ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.fillText('i  (W_out LSV index)',0,0); ctx.restore();
+  ctx.fillText('i  (W_up LSV index)',0,0); ctx.restore();
 
   // outer border
   ctx.strokeStyle='#aaa'; ctx.lineWidth=1;
@@ -1251,6 +1252,10 @@ def write_overlap_all_layers_page(
     n_layers = len(layer_indices)
     heatmap_n = 20
 
+    # write per-layer vector files to web/data/{slug}/ for fetch()-based loading
+    vec_dir = WEB_DIR / "data" / slug
+    vec_dir.mkdir(parents=True, exist_ok=True)
+
     # build per-layer data
     layers_data = {}
     for layer_idx in layer_indices:
@@ -1265,6 +1270,7 @@ def write_overlap_all_layers_page(
             align_k.append(float(M[:k, :k].sum()) / k)
 
         ni = int(r["n_intermediate"]) if "n_intermediate" in r else n_intermediate
+        n_hid = r["S_out"].shape[0]  # rank = n_hidden
 
         layers_data[layer_idx] = {
             "S_out":          S_out,
@@ -1273,9 +1279,29 @@ def write_overlap_all_layers_page(
             "M_corner":       M[:heatmap_n, :heatmap_n].tolist(),
             "n_rank":         n_rank,
             "n_intermediate": ni,
+            "n_hidden":       n_hid,
             "cossim_out":     r["cossim_out"].tolist() if "cossim_out" in r else [],
             "cossim_in":      r["cossim_in"].tolist()  if "cossim_in"  in r else [],
         }
+
+        # write binary float32 vector files: one file per (matrix, side)
+        # shape: (n_vecs, dim) stored row-major as float32
+        for key, arr_key, label in [
+            ("U_up",    "U_up",    "U_up"),
+            ("Vh_up",   "Vh_up",   "Vh_up"),
+            ("U_down",  "U_down",  "U_down"),
+            ("Vh_down", "Vh_down", "Vh_down"),
+        ]:
+            if arr_key in r:
+                arr = r[arr_key]  # shape: (dim, n_vecs) for U, (n_vecs, dim) for Vh
+                # normalise to (n_vecs, dim) so JS can slice by row
+                if arr_key.startswith("U_"):
+                    mat = arr.T.astype(np.float32)   # (n_vecs, dim)
+                else:
+                    mat = arr.astype(np.float32)      # (n_vecs, dim) — Vh already (k, dim)
+                fpath = vec_dir / f"layer{layer_idx}_{key}.bin"
+                mat.tofile(str(fpath))
+                layers_data[layer_idx][f"dim_{key}"] = mat.shape[1]  # dim of each vector
 
     # use first layer's n_intermediate as fallback for random baseline
     ni_fallback = n_intermediate or next(
@@ -1295,6 +1321,8 @@ def write_overlap_all_layers_page(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     first_n_rank = layers_data[layer_indices[0]]["n_rank"]
+    n_intermediate = ni_fallback or 0
+    n_hidden = first_n_rank  # rank of fan_out = min(d_int, d_hid) = d_hid
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -1338,69 +1366,137 @@ def write_overlap_all_layers_page(
 .gear-menu label:hover {{ background: #f4f4f4; border-radius: 3px; }}
 .plot-label {{ font-size:0.85em; color:#888; margin: 24px 0 4px; max-width:975px; margin-left:auto; margin-right:auto; }}
 
-/* layer selector */
-.layer-selector {{
-  display: flex; flex-wrap: wrap; gap: 4px;
-  margin: 16px 0 4px; max-width: 975px;
+/* floating layer sidebar */
+.layer-sidebar {{
+  position: fixed; left: 12px; top: 50%;
+  transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 4px;
+  z-index: 200;
 }}
 .layer-btn {{
-  padding: 4px 10px; font-size: 0.85em; cursor: pointer;
+  padding: 4px 8px; font-size: 0.8em; cursor: pointer;
   border: 1px solid #ccc; border-radius: 4px;
   background: #f5f5f5; color: #444;
   transition: background 0.1s, color 0.1s, border-color 0.1s;
-  user-select: none;
+  user-select: none; white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }}
 .layer-btn:hover {{ background: #e8e8e8; }}
 .layer-btn.active {{
   background: #2266cc; color: #fff; border-color: #1a55bb;
 }}
 </style>
+<script>
+MathJax = {{ tex: {{ inlineMath: [['$','$']] }}, options: {{ skipHtmlTags: ['script','noscript','style','textarea'] }} }};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" id="MathJax-script" async></script>
 </head>
 <body>
 <a class="back" href="../../index.html">← Back to experiments</a>
 <h1>{title}</h1>
-<p style="color:#555;font-size:0.95em">
-  M<sub>ik</sub> = ⟨u<sub>i</sub><sup>out</sup>, v<sub>k</sub><sup>in</sup>⟩²
-  where u<sup>out</sup> are LSVs of W<sub>out</sub> and v<sup>in</sup> are RSVs of W<sub>in</sub>, both in neuron space.
+
+<div style="max-width:860px;font-size:0.95em;color:#444;line-height:1.7;margin-bottom:8px;">
+<p>
+The MLP applies $x \\mapsto W_\\mathrm{{down}}\\,\\phi(W_\\mathrm{{up}}\\,x)$, where
+$W_\\mathrm{{up}} \\in \\mathbb{{R}}^{{d_\\mathrm{{int}} \\times d_\\mathrm{{hid}}}}$ (first, expands) and
+$W_\\mathrm{{down}} \\in \\mathbb{{R}}^{{d_\\mathrm{{hid}} \\times d_\\mathrm{{int}}}}$ (second, contracts),
+with $d_\\mathrm{{int}} = {n_intermediate}$ and $d_\\mathrm{{hid}} = {n_hidden}$.
+Both matrices act in <em>neuron space</em> $\\mathbb{{R}}^{{d_\\mathrm{{int}}}}$, where the nonlinearity $\\phi$ lives.
 </p>
+<p>
+SVDs: $W_\\mathrm{{up}} = U_\\mathrm{{up}} \\Sigma_\\mathrm{{up}} V_\\mathrm{{up}}^\\top$ and
+$W_\\mathrm{{down}} = U_\\mathrm{{down}} \\Sigma_\\mathrm{{down}} V_\\mathrm{{down}}^\\top$.
+The neuron-space bases are $u_i^\\mathrm{{up}}$ (columns of $U_\\mathrm{{up}}$, LSVs of $W_\\mathrm{{up}}$, shape $d_\\mathrm{{int}} \\times d_\\mathrm{{hid}}$)
+and $v_k^\\mathrm{{down}}$ (columns of $V_\\mathrm{{down}}$, RSVs of $W_\\mathrm{{down}}$, shape $d_\\mathrm{{hid}} \\times d_\\mathrm{{int}}$).
+</p>
+<p>
+<strong>Overlap matrix.</strong>
+$M_{{ik}} = \\langle u_i^\\mathrm{{up}},\\, v_k^\\mathrm{{down}} \\rangle^2 \\in [0,1]$.
+Random baseline: $\\mathbb{{E}}[M_{{ik}}] = 1/d_\\mathrm{{int}} = 1/{n_intermediate}$ for independent random unit vectors.
+</p>
+<p>
+<strong>Alignment score.</strong>
+$\\mathrm{{align}}_k = \\frac{{1}}{{k}}\\sum_{{i,j \\le k}} M_{{ij}}$
+measures overlap of the top-$k$ singular subspaces of $W_\\mathrm{{up}}$ and $W_\\mathrm{{down}}$ in neuron space.
+Random baseline: $k / {n_intermediate}$.
+</p>
+<p>
+<strong>All-ones projection.</strong>
+$c_i^\\mathrm{{up}} = \\langle u_i^\\mathrm{{up}},\\, \\hat{{1}} \\rangle$,
+$c_k^\\mathrm{{down}} = \\langle v_k^\\mathrm{{down}},\\, \\hat{{1}} \\rangle$,
+where $\\hat{{1}} = \\mathbf{{1}}/\\sqrt{{d_\\mathrm{{int}}}}$.
+A large value means that singular mode uniformly activates all neurons — a "broadcast" direction.
+</p>
+</div>
 
-<div class="layer-selector" id="layer-selector"></div>
+<div class="layer-sidebar" id="layer-selector"></div>
 
-<div class="plot-label" id="spectra-label">Singular spectra</div>
+<div class="plot-label">Singular spectra of $W_\\mathrm{{up}}$ and $W_\\mathrm{{down}}$</div>
 <div class="plot-wrap" id="spectra-wrap">
   <canvas id="spectra-canvas"></canvas>
   <div class="plot-gear" id="spec-gear-btn">⚙</div>
   <div class="gear-menu" id="spec-gear-menu">
     <label><input type="checkbox" id="spec-logy" checked> log y</label>
     <label><input type="checkbox" id="spec-logx"> log x</label>
-    <label><input type="checkbox" id="spec-norm"> normalize (σ/⟨σ⟩)</label>
+    <label><input type="checkbox" id="spec-norm"> normalize ($\\sigma / \\langle\\sigma\\rangle$)</label>
   </div>
 </div>
 
-<div class="plot-label">align<sub>k</sub> = k⁻¹ Σ<sub>i,j≤k</sub> M<sub>ij</sub></div>
+<div class="plot-label">Alignment: $\\mathrm{{align}}_k = k^{{-1}}\\sum_{{i,j \\le k}} M_{{ij}}$</div>
 <div class="plot-wrap" id="align-wrap">
   <canvas id="align-canvas"></canvas>
   <div class="plot-gear" id="align-gear-btn">⚙</div>
   <div class="gear-menu" id="align-gear-menu">
     <label><input type="checkbox" id="align-logx"> log x</label>
     <label><input type="checkbox" id="align-logy"> log y</label>
-    <label><input type="checkbox" id="align-ratio"> show ratio (alignₖ / random)</label>
-    <label style="gap:6px;">max k&nbsp;<input type="number" id="align-maxk" value="{first_n_rank}" min="1" max="{first_n_rank}" style="width:56px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
+    <label><input type="checkbox" id="align-ratio"> show ratio ($\\mathrm{{align}}_k$ / random)</label>
+    <label style="gap:6px;">max $k$&nbsp;<input type="number" id="align-maxk" value="{first_n_rank}" min="1" max="{first_n_rank}" style="width:56px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
   </div>
 </div>
 
-<div class="plot-label">Overlap matrix M (top {heatmap_n}×{heatmap_n})</div>
+<div class="plot-label">Overlap matrix $M_{{ik}} = \\langle u_i^\\mathrm{{up}},\\, v_k^\\mathrm{{down}} \\rangle^2$ (top {heatmap_n}×{heatmap_n})</div>
 <div class="plot-wrap heatmap" id="heatmap-wrap">
   <canvas id="heatmap-canvas"></canvas>
 </div>
 
-<div class="plot-label">cos-sim of singular vectors with all-ones direction</div>
+<div class="plot-label">Projection onto all-ones: $c_i^\\mathrm{{up}} = \\langle u_i^\\mathrm{{up}},\\,\\hat{{1}}\\rangle$ and $c_k^\\mathrm{{down}} = \\langle v_k^\\mathrm{{down}},\\,\\hat{{1}}\\rangle$</div>
 <div class="plot-wrap" id="cossim-wrap">
   <canvas id="cossim-canvas"></canvas>
   <div class="plot-gear" id="cossim-gear-btn">⚙</div>
   <div class="gear-menu" id="cossim-gear-menu">
     <label><input type="checkbox" id="cossim-sq"> show cos²</label>
     <label><input type="checkbox" id="cossim-logx"> log x</label>
+  </div>
+</div>
+
+<div class="plot-label">Singular vector histogram</div>
+<div style="max-width:975px;margin:6px auto 6px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:0.88em;color:#444;">
+  <label style="display:flex;align-items:center;gap:5px;">
+    Matrix
+    <select id="svh-matrix" style="font-size:0.95em;padding:2px 4px;border:1px solid #ccc;border-radius:3px;">
+      <option value="up">$W_\\mathrm{{up}}$</option>
+      <option value="down">$W_\\mathrm{{down}}$</option>
+    </select>
+  </label>
+  <label style="display:flex;align-items:center;gap:5px;">
+    Vectors
+    <select id="svh-side" style="font-size:0.95em;padding:2px 4px;border:1px solid #ccc;border-radius:3px;">
+      <option value="L">Left singular vectors (LSVs)</option>
+      <option value="R">Right singular vectors (RSVs)</option>
+    </select>
+  </label>
+  <label style="display:flex;align-items:center;gap:5px;">
+    Index
+    <input type="number" id="svh-index" value="0" min="0" style="width:56px;font-size:0.95em;padding:2px 4px;border:1px solid #ccc;border-radius:3px;">
+  </label>
+  <span id="svh-dim-label" style="color:#888;font-style:italic;"></span>
+</div>
+<div class="plot-wrap" id="svhist-wrap">
+  <canvas id="svhist-canvas"></canvas>
+  <div class="plot-gear" id="svhist-gear-btn">⚙</div>
+  <div class="gear-menu" id="svhist-gear-menu">
+    <label><input type="checkbox" id="svhist-logy"> log y</label>
+    <label style="gap:6px;">bins&nbsp;<input type="number" id="svhist-bins" value="80" min="10" max="400" style="width:48px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
   </div>
 </div>
 
@@ -1414,7 +1510,7 @@ const selectorEl = document.getElementById('layer-selector');
 RAW.layer_indices.forEach(li => {{
   const btn = document.createElement('button');
   btn.className = 'layer-btn' + (li === activeLayer ? ' active' : '');
-  btn.textContent = 'L' + li;
+  btn.textContent = 'L' + (li + 1);
   btn.dataset.layer = li;
   btn.addEventListener('click', () => {{
     activeLayer = li;
@@ -1430,13 +1526,17 @@ function layerData() {{ return RAW.layers[activeLayer]; }}
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'overlap-all-{slug}';
-const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio','cossim-sq','cossim-logx'];
+const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio','cossim-sq','cossim-logx','svhist-logy'];
 const OPT_DEFAULTS = {{'spec-logy': true}};
 
 function saveState() {{
   const s = {{}};
   OPT_IDS.forEach(id => s[id] = document.getElementById(id).checked);
-  s['align-maxk'] = document.getElementById('align-maxk').value;
+  s['align-maxk']   = document.getElementById('align-maxk').value;
+  s['svhist-bins']  = document.getElementById('svhist-bins').value;
+  s['svhist-index'] = document.getElementById('svh-index').value;
+  s['svhist-matrix']= document.getElementById('svh-matrix').value;
+  s['svhist-side']  = document.getElementById('svh-side').value;
   s['active-layer'] = activeLayer;
   try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }} catch(e) {{}}
 }}
@@ -1448,7 +1548,11 @@ function loadState() {{
       ? (saved[id] ?? (OPT_DEFAULTS[id] ?? false))
       : (OPT_DEFAULTS[id] ?? false);
   }});
-  if (saved?.['align-maxk']) document.getElementById('align-maxk').value = saved['align-maxk'];
+  if (saved?.['align-maxk'])   document.getElementById('align-maxk').value  = saved['align-maxk'];
+  if (saved?.['svhist-bins'])  document.getElementById('svhist-bins').value = saved['svhist-bins'];
+  if (saved?.['svhist-index']) document.getElementById('svh-index').value   = saved['svhist-index'];
+  if (saved?.['svhist-matrix']) document.getElementById('svh-matrix').value = saved['svhist-matrix'];
+  if (saved?.['svhist-side'])  document.getElementById('svh-side').value    = saved['svhist-side'];
   if (saved?.['active-layer'] != null && RAW.layers[saved['active-layer']]) {{
     activeLayer = saved['active-layer'];
     document.querySelectorAll('.layer-btn').forEach(b =>
@@ -1458,6 +1562,10 @@ function loadState() {{
 loadState();
 OPT_IDS.forEach(id => document.getElementById(id).addEventListener('change', () => {{ saveState(); redraw(); }}));
 document.getElementById('align-maxk').addEventListener('input', () => {{ saveState(); drawAlign(); }});
+document.getElementById('svhist-bins').addEventListener('input', () => {{ saveState(); drawSvHist(); }});
+document.getElementById('svh-index').addEventListener('input', () => {{ saveState(); fetchAndDrawSvHist(); }});
+document.getElementById('svh-matrix').addEventListener('change', () => {{ saveState(); fetchAndDrawSvHist(); }});
+document.getElementById('svh-side').addEventListener('change', () => {{ saveState(); fetchAndDrawSvHist(); }});
 
 // ── Gear menus ────────────────────────────────────────────────────────────────
 function setupGear(btnId, menuId) {{
@@ -1470,6 +1578,7 @@ function setupGear(btnId, menuId) {{
 setupGear('spec-gear-btn',   'spec-gear-menu');
 setupGear('align-gear-btn',  'align-gear-menu');
 setupGear('cossim-gear-btn', 'cossim-gear-menu');
+setupGear('svhist-gear-btn', 'svhist-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -1540,8 +1649,8 @@ function drawSpectra() {{
   }}
 
   const series = [
-    {{S: ld.S_out,      color:'#2266cc', label:'W_out'}},
-    {{S: ld.S_in,       color:'#cc4422', label:'W_in',  dash:[5,3]}},
+    {{S: ld.S_out,      color:'#2266cc', label:'W_up'}},
+    {{S: ld.S_in,       color:'#cc4422', label:'W_down', dash:[5,3]}},
     ...(RAW.S_rand_out.length ? [{{S: RAW.S_rand_out, color:'#888', label:'random', dash:[4,2]}}] : []),
   ];
   const normalized = series.map(s => ({{...s, S: normS(s.S)}}));
@@ -1627,9 +1736,9 @@ function drawHeatmap() {{
     ctx.textAlign='center'; ctx.fillText(i,PAD.left+i*cellW+cellW/2,PAD.top+ph+16);
   }}
   ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
-  ctx.fillText('j  (W_in RSV index)', PAD.left+pw/2, H-8);
+  ctx.fillText('k  (W_down RSV index)', PAD.left+pw/2, H-8);
   ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.fillText('i  (W_out LSV index)',0,0); ctx.restore();
+  ctx.fillText('i  (W_up LSV index)',0,0); ctx.restore();
   ctx.strokeStyle='#aaa'; ctx.lineWidth=1; ctx.strokeRect(PAD.left,PAD.top,pw,ph);
 
   const cbX=PAD.left+pw+8, cbY=PAD.top, cbW=14, cbH=ph;
@@ -1716,7 +1825,7 @@ function drawAlign() {{
   ctx.fillStyle='#444'; ctx.font='13px Georgia,serif'; ctx.textAlign='center';
   ctx.fillText('k',PAD.left+pw/2,H-8);
   ctx.save(); ctx.translate(14,PAD.top+ph/2); ctx.rotate(-Math.PI/2);
-  ctx.fillText(ratio?'alignₖ / random':'alignₖ',0,0); ctx.restore();
+  ctx.fillText(ratio?'alignₖ / (k/N)':'alignₖ',0,0); ctx.restore();
 
   if(ratio) {{
     const y1=toY(1);
@@ -1724,7 +1833,7 @@ function drawAlign() {{
     ctx.beginPath(); ctx.moveTo(PAD.left,y1); ctx.lineTo(PAD.left+pw,y1); ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle='#aaa'; ctx.font='11px Georgia,serif'; ctx.textAlign='left';
-    ctx.fillText('random (= 1)',PAD.left+4,y1-4);
+    ctx.fillText('random  k/N = 1',PAD.left+4,y1-4);
   }} else {{
     ctx.strokeStyle='#aaa'; ctx.lineWidth=1.5; ctx.setLineDash([5,3]);
     ctx.beginPath();
@@ -1801,8 +1910,8 @@ function drawCossim() {{
   ctx.fillText(sq?'cos²(u, 1̂)':'cos(u, 1̂)',0,0); ctx.restore();
 
   const series=[
-    {{vals:vals_out, color:'#2266cc', label:'W_out LSVs'}},
-    {{vals:vals_in,  color:'#cc4422', label:'W_in RSVs'}},
+    {{vals:vals_out, color:'#2266cc', label:'W_up LSVs (uᵢᵘᵖ)'}},
+    {{vals:vals_in,  color:'#cc4422', label:'W_down RSVs (vₖᵈᵒʷⁿ)'}},
   ];
   series.forEach((s,si)=>{{
     ctx.fillStyle=s.color; ctx.globalAlpha=0.7;
@@ -1818,9 +1927,164 @@ function drawCossim() {{
   }});
 }}
 
-function redraw() {{ drawSpectra(); drawAlign(); drawHeatmap(); drawCossim(); }}
+function redraw() {{ drawSpectra(); drawAlign(); drawHeatmap(); drawCossim(); drawSvHist(); }}
 window.addEventListener('resize', redraw);
 redraw();
+fetchAndDrawSvHist();
+
+// ── 5. Singular vector histogram ──────────────────────────────────────────────
+const svhistCanvas = document.getElementById('svhist-canvas');
+let svhistVec = null;  // currently loaded Float32Array
+
+function svhistKey() {{
+  const matrix = document.getElementById('svh-matrix').value;  // 'up' or 'down'
+  const side   = document.getElementById('svh-side').value;    // 'L' or 'R'
+  // map to the stored file key
+  // W_up  LSVs = U_up  (neuron space, dim=n_intermediate)
+  // W_up  RSVs = Vh_up (hidden space, dim=n_hidden)
+  // W_down LSVs = U_down (hidden space, dim=n_hidden)
+  // W_down RSVs = Vh_down (neuron space, dim=n_intermediate)
+  if (matrix === 'up'   && side === 'L') return 'U_up';
+  if (matrix === 'up'   && side === 'R') return 'Vh_up';
+  if (matrix === 'down' && side === 'L') return 'U_down';
+  if (matrix === 'down' && side === 'R') return 'Vh_down';
+}}
+
+function svhistDimLabel() {{
+  const ld = layerData();
+  const key = svhistKey();
+  const dim = ld['dim_' + key];
+  const space = (key === 'U_up' || key === 'Vh_down') ? 'neuron space' : 'hidden space';
+  return dim ? `dim = ${{dim}}  (${{space}})` : '';
+}}
+
+function updateSvhistControls() {{
+  const ld = layerData();
+  const key = svhistKey();
+  const n_vecs = ld.n_rank;
+  const idx = Math.max(0, Math.min(n_vecs - 1, parseInt(document.getElementById('svh-index').value) || 0));
+  document.getElementById('svh-index').max = n_vecs - 1;
+  document.getElementById('svh-index').value = idx;
+  document.getElementById('svh-dim-label').textContent = svhistDimLabel();
+}}
+
+function fetchAndDrawSvHist() {{
+  updateSvhistControls();
+  const key = svhistKey();
+  const idx = parseInt(document.getElementById('svh-index').value) || 0;
+  const ld = layerData();
+  const dim = ld['dim_' + key];
+  if (!dim) {{ svhistVec = null; drawSvHist(); return; }}
+
+  const url = `../../data/{slug}/layer${{activeLayer}}_${{key}}.bin`;
+  fetch(url)
+    .then(r => r.arrayBuffer())
+    .then(buf => {{
+      const all = new Float32Array(buf);  // (n_vecs * dim,) row-major
+      svhistVec = all.slice(idx * dim, (idx + 1) * dim);
+      drawSvHist();
+    }})
+    .catch(() => {{ svhistVec = null; drawSvHist(); }});
+}}
+
+function drawSvHist() {{
+  const dpr = window.devicePixelRatio || 1;
+  const W = svhistCanvas.offsetWidth, H = svhistCanvas.offsetHeight || 420;
+  svhistCanvas.width = W * dpr; svhistCanvas.height = H * dpr;
+  const ctx = svhistCanvas.getContext('2d'); ctx.scale(dpr, dpr);
+  const PAD = {{top:30, right:30, bottom:50, left:70}};
+  const pw = W - PAD.left - PAD.right, ph = H - PAD.top - PAD.bottom;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (!svhistVec || svhistVec.length === 0) {{
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Georgia,serif'; ctx.textAlign = 'center';
+    ctx.fillText('loading…', W/2, H/2);
+    return;
+  }}
+
+  const logY = document.getElementById('svhist-logy').checked;
+  const nBins = Math.max(10, Math.min(400, parseInt(document.getElementById('svhist-bins').value) || 80));
+  const vals = Array.from(svhistVec);
+  const vMin = Math.min(...vals), vMax = Math.max(...vals);
+
+  // bin edges
+  const edges = [];
+  for (let b = 0; b <= nBins; b++) edges.push(vMin + (vMax - vMin) * b / nBins);
+  const counts = new Array(nBins).fill(0);
+  vals.forEach(v => {{
+    let bi = Math.floor((v - vMin) / (vMax - vMin) * nBins);
+    if (bi >= nBins) bi = nBins - 1;
+    counts[bi]++;
+  }});
+
+  const yMax_raw = Math.max(...counts);
+  let yMin = 0, yMax = yMax_raw * 1.08;
+  if (logY) {{
+    const nonzero = counts.filter(c => c > 0);
+    yMin = Math.pow(10, Math.floor(Math.log10(Math.min(...nonzero))));
+    yMax = Math.pow(10, Math.ceil(Math.log10(yMax_raw)));
+  }}
+
+  function toX(v) {{ return PAD.left + (v - vMin) / (vMax - vMin) * pw; }}
+  function toY(v) {{
+    if (logY) {{
+      const ly = Math.log10(Math.max(v, 1e-30));
+      return PAD.top + (1 - (ly - Math.log10(yMin)) / (Math.log10(yMax) - Math.log10(yMin))) * ph;
+    }}
+    return PAD.top + (1 - (v - yMin) / (yMax - yMin)) * ph;
+  }}
+
+  drawGrid(ctx, PAD, pw, ph,
+    linTicks(vMin, vMax, 8),
+    logY ? logTicks(yMin, yMax) : linTicks(yMin, yMax, 6),
+    toX, toY);
+  drawAxes(ctx, PAD, pw, ph);
+
+  // draw bars
+  const barColor = document.getElementById('svh-matrix').value === 'up' ? '#2266cc' : '#cc4422';
+  ctx.fillStyle = barColor; ctx.globalAlpha = 0.7;
+  counts.forEach((c, bi) => {{
+    if (logY && c === 0) return;
+    const x0 = toX(edges[bi]), x1 = toX(edges[bi+1]);
+    const y0 = toY(logY ? Math.max(c, yMin) : c), y1 = toY(logY ? yMin : 0);
+    ctx.fillRect(x0, y0, Math.max(x1 - x0 - 0.5, 0.5), y1 - y0);
+  }});
+  ctx.globalAlpha = 1;
+
+  // axis labels
+  const key = svhistKey();
+  const matrix = document.getElementById('svh-matrix').value;
+  const side   = document.getElementById('svh-side').value;
+  const idx    = parseInt(document.getElementById('svh-index').value) || 0;
+  const sideLabel = side === 'L' ? 'LSV' : 'RSV';
+  const label = `W_${{matrix}} ${{sideLabel}} #${{idx}}  (n=${{vals.length}})`;
+  ctx.fillStyle = '#444'; ctx.font = '13px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText(label, PAD.left + pw/2, H - 8);
+  ctx.save(); ctx.translate(14, PAD.top + ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('count', 0, 0); ctx.restore();
+
+  // normal reference curve
+  const mu = vals.reduce((a,b)=>a+b,0)/vals.length;
+  const sd = Math.sqrt(vals.reduce((a,b)=>a+(b-mu)**2,0)/vals.length);
+  if (sd > 0) {{
+    ctx.strokeStyle = '#888'; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+    ctx.beginPath();
+    const binW = (vMax - vMin) / nBins;
+    let started = false;
+    for (let px = PAD.left; px <= PAD.left + pw; px += 1) {{
+      const v = vMin + (px - PAD.left) / pw * (vMax - vMin);
+      const density = Math.exp(-0.5*((v-mu)/sd)**2) / (sd * Math.sqrt(2*Math.PI));
+      const c = density * vals.length * binW;
+      if (logY && c < yMin) {{ started = false; continue; }}
+      const y = toY(logY ? Math.max(c, yMin) : c);
+      if (!started) {{ ctx.moveTo(px, y); started = true; }} else ctx.lineTo(px, y);
+    }}
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#888'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'left';
+    ctx.fillText('Gaussian fit', PAD.left + 4, PAD.top + 14);
+  }}
+}}
 </script>
 </body>
 </html>"""
