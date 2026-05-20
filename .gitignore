@@ -1,5 +1,7 @@
 plots/
-web/
+web/expts/
+web/data/
+web/index.html
 results/
 __pycache__/
 *.pyc

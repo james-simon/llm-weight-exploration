@@ -119,6 +119,11 @@ def cmd_render(_args):
             mt = slug[len("midlayer_spectra_comparison_"):]
             run_midlayer_spectra_comparison(PYTHIA_MODELS, mt)
 
+        elif slug.startswith("fanout_fanin_overlap_all_layers_"):
+            model = slug[len("fanout_fanin_overlap_all_layers_"):]
+            cmd_expt(argparse.Namespace(name="fanout_fanin_overlap_all_layers", model=model,
+                                        models=None, layer=None, top_k=32, matrix_type="fan_out"))
+
         elif slug.startswith("fanout_fanin_overlap_"):
             result_name = slug
             if results_exist(result_name):
