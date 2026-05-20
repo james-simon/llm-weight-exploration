@@ -917,6 +917,7 @@ setupGear('align-gear-btn',  'align-gear-menu');
 setupGear('cossim-gear-btn', 'cossim-gear-menu');
 setupGear('svhist-gear-btn',     'svhist-gear-menu');
 setupGear('biascossim-gear-btn', 'biascossim-gear-menu');
+setupGear('biashist-gear-btn',   'biashist-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -939,6 +940,7 @@ function niceStep(r) {{
   return (f<1.5?1:f<3?2:f<7?5:10)*e;
 }}
 function fmtNum(v) {{
+  if (Math.abs(v) < 1e-9) return '0';
   if(Math.abs(v)>=1000||(Math.abs(v)<0.01&&v!==0)) return v.toExponential(1);
   if(Number.isInteger(v)||Math.abs(v)>=10) return String(Math.round(v));
   return v.toPrecision(2);
@@ -1283,6 +1285,7 @@ def write_overlap_all_layers_page(
             "n_hidden":       n_hid,
             "cossim_out":     r["cossim_out"].tolist() if "cossim_out" in r else [],
             "cossim_in":      r["cossim_in"].tolist()  if "cossim_in"  in r else [],
+            "bias_up":        r["bias_up"].tolist()     if "bias_up"    in r else [],
         }
 
         # write binary float32 vector files: one file per (matrix, side)
@@ -1521,6 +1524,20 @@ A large value means that singular mode uniformly activates all neurons — a "br
   </div>
 </div>
 
+<h2>7. \\(b_\\mathrm{{up}}\\) element histogram — selected layer</h2>
+<p>
+  Histogram of the elements of the bias vector \\(b_\\mathrm{{up}} \\in \\mathbb{{R}}^{{d_\\mathrm{{int}}}}\\)
+  for the selected layer.
+</p>
+<div class="plot-wrap" id="biashist-wrap">
+  <canvas id="biashist-canvas"></canvas>
+  <div class="plot-gear" id="biashist-gear-btn">⚙</div>
+  <div class="gear-menu" id="biashist-gear-menu">
+    <label><input type="checkbox" id="biashist-logy"> log y</label>
+    <label style="gap:6px;">bins&nbsp;<input type="number" id="biashist-bins" value="80" min="10" max="400" style="width:48px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
+  </div>
+</div>
+
 <script>
 const RAW = {data_json};
 
@@ -1547,18 +1564,19 @@ function layerData() {{ return RAW.layers[activeLayer]; }}
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'overlap-all-{slug}';
-const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio','cossim-sq','cossim-logx','svhist-logy','biascossim-sq'];
+const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio','cossim-sq','cossim-logx','svhist-logy','biascossim-sq','biashist-logy'];
 const OPT_DEFAULTS = {{'spec-logy': true}};
 
 function saveState() {{
   const s = {{}};
   OPT_IDS.forEach(id => s[id] = document.getElementById(id).checked);
-  s['align-maxk']   = document.getElementById('align-maxk').value;
-  s['svhist-bins']  = document.getElementById('svhist-bins').value;
-  s['svhist-index'] = document.getElementById('svh-index').value;
-  s['svhist-matrix']= document.getElementById('svh-matrix').value;
-  s['svhist-side']  = document.getElementById('svh-side').value;
-  s['active-layer'] = activeLayer;
+  s['align-maxk']    = document.getElementById('align-maxk').value;
+  s['svhist-bins']   = document.getElementById('svhist-bins').value;
+  s['svhist-index']  = document.getElementById('svh-index').value;
+  s['svhist-matrix'] = document.getElementById('svh-matrix').value;
+  s['svhist-side']   = document.getElementById('svh-side').value;
+  s['biashist-bins'] = document.getElementById('biashist-bins').value;
+  s['active-layer']  = activeLayer;
   try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); }} catch(e) {{}}
 }}
 function loadState() {{
@@ -1569,11 +1587,12 @@ function loadState() {{
       ? (saved[id] ?? (OPT_DEFAULTS[id] ?? false))
       : (OPT_DEFAULTS[id] ?? false);
   }});
-  if (saved?.['align-maxk'])   document.getElementById('align-maxk').value  = saved['align-maxk'];
-  if (saved?.['svhist-bins'])  document.getElementById('svhist-bins').value = saved['svhist-bins'];
-  if (saved?.['svhist-index']) document.getElementById('svh-index').value   = saved['svhist-index'];
-  if (saved?.['svhist-matrix']) document.getElementById('svh-matrix').value = saved['svhist-matrix'];
-  if (saved?.['svhist-side'])  document.getElementById('svh-side').value    = saved['svhist-side'];
+  if (saved?.['align-maxk'])    document.getElementById('align-maxk').value   = saved['align-maxk'];
+  if (saved?.['svhist-bins'])   document.getElementById('svhist-bins').value  = saved['svhist-bins'];
+  if (saved?.['svhist-index'])  document.getElementById('svh-index').value    = saved['svhist-index'];
+  if (saved?.['svhist-matrix']) document.getElementById('svh-matrix').value   = saved['svhist-matrix'];
+  if (saved?.['svhist-side'])   document.getElementById('svh-side').value     = saved['svhist-side'];
+  if (saved?.['biashist-bins']) document.getElementById('biashist-bins').value = saved['biashist-bins'];
   if (saved?.['active-layer'] != null && RAW.layers[saved['active-layer']]) {{
     activeLayer = saved['active-layer'];
     document.querySelectorAll('.layer-btn').forEach(b =>
@@ -1587,6 +1606,7 @@ document.getElementById('svhist-bins').addEventListener('input', () => {{ saveSt
 document.getElementById('svh-index').addEventListener('input', () => {{ saveState(); fetchAndDrawSvHist(); }});
 document.getElementById('svh-matrix').addEventListener('change', () => {{ saveState(); fetchAndDrawSvHist(); }});
 document.getElementById('svh-side').addEventListener('change', () => {{ saveState(); fetchAndDrawSvHist(); }});
+document.getElementById('biashist-bins').addEventListener('input', () => {{ saveState(); drawBiasHist(); }});
 
 // ── Gear menus ────────────────────────────────────────────────────────────────
 function setupGear(btnId, menuId) {{
@@ -1601,6 +1621,7 @@ setupGear('align-gear-btn',  'align-gear-menu');
 setupGear('cossim-gear-btn', 'cossim-gear-menu');
 setupGear('svhist-gear-btn',     'svhist-gear-menu');
 setupGear('biascossim-gear-btn', 'biascossim-gear-menu');
+setupGear('biashist-gear-btn',   'biashist-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -1623,6 +1644,7 @@ function niceStep(r) {{
   return (f<1.5?1:f<3?2:f<7?5:10)*e;
 }}
 function fmtNum(v) {{
+  if (Math.abs(v) < 1e-9) return '0';
   if(Math.abs(v)>=1000||(Math.abs(v)<0.01&&v!==0)) return v.toExponential(1);
   if(Number.isInteger(v)||Math.abs(v)>=10) return String(Math.round(v));
   return v.toPrecision(2);
@@ -1953,7 +1975,13 @@ function drawCossim() {{
 const svhistCanvas = document.getElementById('svhist-canvas');
 let svhistVec = null;  // currently loaded Float32Array
 
-function redraw() {{ drawSpectra(); drawAlign(); drawHeatmap(); drawCossim(); drawSvHist(); drawBiasCossim(); }}
+// ── 6. Bias cos-sim with 1̂ — all layers ─────────────────────────────────────
+const biascossimCanvas = document.getElementById('biascossim-canvas');
+
+// ── 7. b_up element histogram ────────────────────────────────────────────────
+const biashistCanvas = document.getElementById('biashist-canvas');
+
+function redraw() {{ drawSpectra(); drawAlign(); drawHeatmap(); drawCossim(); drawSvHist(); drawBiasCossim(); drawBiasHist(); }}
 window.addEventListener('resize', redraw);
 redraw();
 fetchAndDrawSvHist();
@@ -2086,6 +2114,14 @@ function drawSvHist() {{
   ctx.save(); ctx.translate(14, PAD.top + ph/2); ctx.rotate(-Math.PI/2);
   ctx.fillText('count', 0, 0); ctx.restore();
 
+  // vertical zero line
+  if (vMin < 0 && vMax > 0) {{
+    const x0 = toX(0);
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(x0, PAD.top); ctx.lineTo(x0, PAD.top + ph); ctx.stroke();
+    ctx.setLineDash([]);
+  }}
+
   // normal reference curve
   const mu = vals.reduce((a,b)=>a+b,0)/vals.length;
   const sd = Math.sqrt(vals.reduce((a,b)=>a+(b-mu)**2,0)/vals.length);
@@ -2107,9 +2143,6 @@ function drawSvHist() {{
     ctx.fillText('Gaussian fit', PAD.left + 4, PAD.top + 14);
   }}
 }}
-
-// ── 6. Bias cos-sim with 1̂ — all layers ─────────────────────────────────────
-const biascossimCanvas = document.getElementById('biascossim-canvas');
 
 function drawBiasCossim() {{
   const dpr = window.devicePixelRatio || 1;
@@ -2184,6 +2217,92 @@ function drawBiasCossim() {{
     ctx.font = '12px Georgia,serif'; ctx.textAlign = 'left';
     ctx.fillText(s.label, lx + 8, ly + 4);
   }});
+}}
+
+function drawBiasHist() {{
+  const dpr = window.devicePixelRatio || 1;
+  const W = biashistCanvas.offsetWidth, H = biashistCanvas.offsetHeight || 320;
+  biashistCanvas.width = W * dpr; biashistCanvas.height = H * dpr;
+  const ctx = biashistCanvas.getContext('2d'); ctx.scale(dpr, dpr);
+  const logY = document.getElementById('biashist-logy').checked;
+  const nBins = Math.max(10, Math.min(400, parseInt(document.getElementById('biashist-bins').value) || 80));
+  const PAD = {{top:30, right:30, bottom:50, left:70}};
+  const pw = W - PAD.left - PAD.right, ph = H - PAD.top - PAD.bottom;
+
+  const vals = layerData().bias_up || [];
+  if (!vals.length) {{
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Georgia,serif'; ctx.textAlign = 'center';
+    ctx.fillText('(no bias data — recompute experiment)', W/2, H/2);
+    return;
+  }}
+
+  const vMin = Math.min(...vals), vMax = Math.max(...vals);
+  const edges = [];
+  for (let b = 0; b <= nBins; b++) edges.push(vMin + (vMax - vMin) * b / nBins);
+  const counts = new Array(nBins).fill(0);
+  vals.forEach(v => {{
+    let bi = Math.floor((v - vMin) / (vMax - vMin) * nBins);
+    if (bi >= nBins) bi = nBins - 1;
+    counts[bi]++;
+  }});
+
+  const yMin = logY ? 0.5 : 0;
+  const yMax = logY ? Math.max(...counts) * 2 : Math.max(...counts) * 1.08;
+  function toX(v) {{ return PAD.left + (v - vMin) / (vMax - vMin) * pw; }}
+  function toY(c) {{ return logY
+    ? PAD.top + (1 - (Math.log10(Math.max(c, 0.5)) - Math.log10(0.5)) / (Math.log10(yMax) - Math.log10(0.5))) * ph
+    : PAD.top + (1 - c / yMax) * ph; }}
+
+  ctx.clearRect(0, 0, W, H);
+  drawGrid(ctx, PAD, pw, ph,
+    linTicks(vMin, vMax, 8),
+    logY ? logTicks(0.5, yMax) : linTicks(0, yMax, 6),
+    toX, toY);
+  drawAxes(ctx, PAD, pw, ph);
+
+  // vertical zero line
+  if (vMin < 0 && vMax > 0) {{
+    const x0 = toX(0);
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(x0, PAD.top); ctx.lineTo(x0, PAD.top + ph); ctx.stroke();
+    ctx.setLineDash([]);
+  }}
+
+  ctx.fillStyle = '#8844cc';
+  counts.forEach((c, bi) => {{
+    if (logY && c === 0) return;
+    const x0 = toX(edges[bi]), x1 = toX(edges[bi+1]);
+    const y0 = toY(logY ? Math.max(c, 0.5) : c), y1 = toY(logY ? 0.5 : 0);
+    ctx.fillRect(x0, y0, Math.max(x1 - x0 - 0.5, 0.5), y1 - y0);
+  }});
+
+  // axis labels
+  ctx.fillStyle = '#444'; ctx.font = '13px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText(`b_up elements  (n=${{vals.length}})`, PAD.left + pw/2, H - 8);
+  ctx.save(); ctx.translate(14, PAD.top + ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText('count', 0, 0); ctx.restore();
+
+  // Gaussian reference
+  const mu = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mu)**2, 0) / vals.length);
+  if (sd > 0) {{
+    ctx.strokeStyle = '#888'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    const binW = (vMax - vMin) / nBins;
+    let started = false;
+    for (let px = PAD.left; px <= PAD.left + pw; px++) {{
+      const v = vMin + (px - PAD.left) / pw * (vMax - vMin);
+      const density = Math.exp(-0.5 * ((v - mu) / sd)**2) / (sd * Math.sqrt(2 * Math.PI));
+      const c = density * vals.length * binW;
+      if (logY && c < 0.5) {{ started = false; continue; }}
+      const y = toY(logY ? Math.max(c, 0.5) : c);
+      if (!started) {{ ctx.moveTo(px, y); started = true; }} else ctx.lineTo(px, y);
+    }}
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#888'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'left';
+    ctx.fillText('Gaussian fit', PAD.left + 4, PAD.top + 14);
+  }}
 }}
 </script>
 </body>

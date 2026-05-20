@@ -109,6 +109,7 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
         "cossim_in":        cossim_in,
         "bias_cossim_up":   np.array(bias_cossim_up),
         "bias_cossim_down": np.array(bias_cossim_down),
+        "bias_up":          b_up.astype(np.float32),
         "top_k":            np.array(k),
         "n_intermediate": np.array(n_intermediate),
         "layer":          np.array(layer_idx),
