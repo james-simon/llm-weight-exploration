@@ -82,12 +82,16 @@ def load_mlp_weights(model_name: str, layer_idx: int) -> dict:
 
     fan_out = _find_tensor(handles, f"gpt_neox.layers.{layer_idx}.mlp.dense_h_to_4h.weight")
     fan_in  = _find_tensor(handles, f"gpt_neox.layers.{layer_idx}.mlp.dense_4h_to_h.weight")
+    bias_up   = _find_tensor(handles, f"gpt_neox.layers.{layer_idx}.mlp.dense_h_to_4h.bias")
+    bias_down = _find_tensor(handles, f"gpt_neox.layers.{layer_idx}.mlp.dense_4h_to_h.bias")
 
     return {
-        "fan_out": fan_out,
-        "fan_in":  fan_in,
-        "layer":   layer_idx,
-        "model":   model_name,
+        "fan_out":   fan_out,
+        "fan_in":    fan_in,
+        "bias_up":   bias_up,
+        "bias_down": bias_down,
+        "layer":     layer_idx,
+        "model":     model_name,
     }
 
 

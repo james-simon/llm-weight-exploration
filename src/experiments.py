@@ -94,13 +94,22 @@ def fanout_fanin_overlap(model_name: str, layer_idx: int = None, top_k: int = No
     cossim_out = U_out_k.T @ ones   # (k,) — one value per LSV of fan_out
     cossim_in  = V_in_k.T  @ ones   # (k,) — one value per RSV of fan_in
 
+    # cos-sim of biases with the all-ones direction in their respective spaces
+    b_up   = w["bias_up"]    # (n_intermediate,)  — lives in neuron space
+    b_down = w["bias_down"]  # (n_hidden,)         — lives in hidden space
+    ones_hid = np.ones(b_down.shape[0]) / np.sqrt(b_down.shape[0])
+    bias_cossim_up   = float(b_up   / (np.linalg.norm(b_up)   + 1e-12) @ ones)
+    bias_cossim_down = float(b_down / (np.linalg.norm(b_down) + 1e-12) @ ones_hid)
+
     result = {
         "M":              M,
         "S_out":          S_out,
         "S_in":           S_in,
-        "cossim_out":     cossim_out,
-        "cossim_in":      cossim_in,
-        "top_k":          np.array(k),
+        "cossim_out":       cossim_out,
+        "cossim_in":        cossim_in,
+        "bias_cossim_up":   np.array(bias_cossim_up),
+        "bias_cossim_down": np.array(bias_cossim_down),
+        "top_k":            np.array(k),
         "n_intermediate": np.array(n_intermediate),
         "layer":          np.array(layer_idx),
         "model":          np.array(model_name),

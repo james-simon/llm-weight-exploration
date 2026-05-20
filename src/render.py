@@ -915,7 +915,8 @@ function setupGear(btnId, menuId) {{
 setupGear('spec-gear-btn',   'spec-gear-menu');
 setupGear('align-gear-btn',  'align-gear-menu');
 setupGear('cossim-gear-btn', 'cossim-gear-menu');
-setupGear('svhist-gear-btn', 'svhist-gear-menu');
+setupGear('svhist-gear-btn',     'svhist-gear-menu');
+setupGear('biascossim-gear-btn', 'biascossim-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -1308,13 +1309,18 @@ def write_overlap_all_layers_page(
         (int(r["n_intermediate"]) for r in results.values() if "n_intermediate" in r), None
     )
 
+    bias_cossim_up   = [float(results[li]["bias_cossim_up"])   if "bias_cossim_up"   in results[li] else None for li in layer_indices]
+    bias_cossim_down = [float(results[li]["bias_cossim_down"]) if "bias_cossim_down" in results[li] else None for li in layer_indices]
+
     data_json = json.dumps({
-        "layers":       layers_data,
-        "layer_indices": layer_indices,
-        "S_rand_out":   random_out if random_out is not None else [],
-        "S_rand_in":    random_in  if random_in  is not None else [],
-        "heatmap_n":    heatmap_n,
-        "n_intermediate": ni_fallback,
+        "layers":          layers_data,
+        "layer_indices":   layer_indices,
+        "S_rand_out":      random_out if random_out is not None else [],
+        "S_rand_in":       random_in  if random_in  is not None else [],
+        "heatmap_n":       heatmap_n,
+        "n_intermediate":  ni_fallback,
+        "bias_cossim_up":  bias_cossim_up,
+        "bias_cossim_down": bias_cossim_down,
     })
 
     out_dir = EXPTS_DIR / slug
@@ -1500,6 +1506,21 @@ A large value means that singular mode uniformly activates all neurons — a "br
   </div>
 </div>
 
+<h2>6. Bias cos-sim with \\(\\hat{{1}}\\) — all layers</h2>
+<p>
+  Cosine similarity of the MLP bias vectors with the all-ones direction \\(\\hat{{1}} = \\mathbf{{1}}/\\sqrt{{d}}\\),
+  for every layer. \\(b_\\mathrm{{up}} \\in \\mathbb{{R}}^{{d_\\mathrm{{int}}}}\\) (neuron space);
+  \\(b_\\mathrm{{down}} \\in \\mathbb{{R}}^{{d_\\mathrm{{hid}}}}\\) (hidden space).
+  Note: this plot shows all layers simultaneously and does not respond to the layer selector.
+</p>
+<div class="plot-wrap" id="biascossim-wrap">
+  <canvas id="biascossim-canvas"></canvas>
+  <div class="plot-gear" id="biascossim-gear-btn">⚙</div>
+  <div class="gear-menu" id="biascossim-gear-menu">
+    <label><input type="checkbox" id="biascossim-sq"> show cos²</label>
+  </div>
+</div>
+
 <script>
 const RAW = {data_json};
 
@@ -1526,7 +1547,7 @@ function layerData() {{ return RAW.layers[activeLayer]; }}
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'overlap-all-{slug}';
-const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio','cossim-sq','cossim-logx','svhist-logy'];
+const OPT_IDS = ['spec-logy','spec-logx','spec-norm','align-logx','align-logy','align-ratio','cossim-sq','cossim-logx','svhist-logy','biascossim-sq'];
 const OPT_DEFAULTS = {{'spec-logy': true}};
 
 function saveState() {{
@@ -1578,7 +1599,8 @@ function setupGear(btnId, menuId) {{
 setupGear('spec-gear-btn',   'spec-gear-menu');
 setupGear('align-gear-btn',  'align-gear-menu');
 setupGear('cossim-gear-btn', 'cossim-gear-menu');
-setupGear('svhist-gear-btn', 'svhist-gear-menu');
+setupGear('svhist-gear-btn',     'svhist-gear-menu');
+setupGear('biascossim-gear-btn', 'biascossim-gear-menu');
 document.addEventListener('click', () => {{
   document.querySelectorAll('.gear-menu').forEach(m => m.classList.remove('open'));
 }});
@@ -1927,14 +1949,14 @@ function drawCossim() {{
   }});
 }}
 
-function redraw() {{ drawSpectra(); drawAlign(); drawHeatmap(); drawCossim(); drawSvHist(); }}
-window.addEventListener('resize', redraw);
-redraw();
-fetchAndDrawSvHist();
-
 // ── 5. Singular vector histogram ──────────────────────────────────────────────
 const svhistCanvas = document.getElementById('svhist-canvas');
 let svhistVec = null;  // currently loaded Float32Array
+
+function redraw() {{ drawSpectra(); drawAlign(); drawHeatmap(); drawCossim(); drawSvHist(); drawBiasCossim(); }}
+window.addEventListener('resize', redraw);
+redraw();
+fetchAndDrawSvHist();
 
 function svhistKey() {{
   const matrix = document.getElementById('svh-matrix').value;  // 'up' or 'down'
@@ -2084,6 +2106,84 @@ function drawSvHist() {{
     ctx.fillStyle = '#888'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'left';
     ctx.fillText('Gaussian fit', PAD.left + 4, PAD.top + 14);
   }}
+}}
+
+// ── 6. Bias cos-sim with 1̂ — all layers ─────────────────────────────────────
+const biascossimCanvas = document.getElementById('biascossim-canvas');
+
+function drawBiasCossim() {{
+  const dpr = window.devicePixelRatio || 1;
+  const W = biascossimCanvas.offsetWidth, H = biascossimCanvas.offsetHeight || 320;
+  biascossimCanvas.width = W * dpr; biascossimCanvas.height = H * dpr;
+  const ctx = biascossimCanvas.getContext('2d'); ctx.scale(dpr, dpr);
+  const sq = document.getElementById('biascossim-sq').checked;
+  const PAD = {{top:30, right:30, bottom:50, left:70}};
+  const pw = W - PAD.left - PAD.right, ph = H - PAD.top - PAD.bottom;
+
+  const up_vals   = (RAW.bias_cossim_up   || []).map(v => v === null ? NaN : (sq ? v*v : v));
+  const down_vals = (RAW.bias_cossim_down || []).map(v => v === null ? NaN : (sq ? v*v : v));
+  const layers = RAW.layer_indices;
+  const n = layers.length;
+
+  if (!n) {{
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#aaa'; ctx.font = '14px Georgia,serif'; ctx.textAlign = 'center';
+    ctx.fillText('(no bias data — recompute experiment)', W/2, H/2);
+    return;
+  }}
+
+  const allVals = [...up_vals, ...down_vals].filter(v => !isNaN(v));
+  const yMin_data = Math.min(...allVals), yMax_data = Math.max(...allVals);
+  const yPad = (yMax_data - yMin_data) * 0.1 || 0.05;
+  const yMin = yMin_data - yPad, yMax = yMax_data + yPad;
+
+  function toX(li) {{ return PAD.left + li / (n - 1 || 1) * pw; }}
+  function toY(v)  {{ return PAD.top + (1 - (v - yMin) / (yMax - yMin)) * ph; }}
+
+  ctx.clearRect(0, 0, W, H);
+  drawGrid(ctx, PAD, pw, ph,
+    linTicks(0, n - 1, Math.min(n, 10)),
+    linTicks(yMin, yMax, 6),
+    i => PAD.left + i / (n - 1 || 1) * pw, toY);
+  drawAxes(ctx, PAD, pw, ph);
+
+  // y=0 line
+  const y0 = toY(0);
+  if (y0 >= PAD.top && y0 <= PAD.top + ph) {{
+    ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(PAD.left, y0); ctx.lineTo(PAD.left + pw, y0); ctx.stroke();
+    ctx.setLineDash([]);
+  }}
+
+  // x-axis label: layer numbers (1-indexed)
+  ctx.fillStyle = '#444'; ctx.font = '13px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText('layer', PAD.left + pw/2, H - 8);
+  ctx.save(); ctx.translate(14, PAD.top + ph/2); ctx.rotate(-Math.PI/2);
+  ctx.fillText(sq ? 'cos²(b, 1̂)' : 'cos(b, 1̂)', 0, 0); ctx.restore();
+
+  // x-tick labels (layer numbers 1-indexed)
+  ctx.fillStyle = '#666'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'center';
+  layers.forEach((li, i) => {{
+    ctx.fillText(li + 1, toX(i), PAD.top + ph + 16);
+  }});
+
+  const series = [
+    {{vals: up_vals,   color: '#2266cc', label: 'b_up (neuron space)'}},
+    {{vals: down_vals, color: '#cc4422', label: 'b_down (hidden space)'}},
+  ];
+  series.forEach((s, si) => {{
+    ctx.fillStyle = s.color; ctx.globalAlpha = 0.85;
+    s.vals.forEach((v, i) => {{
+      if (isNaN(v)) return;
+      const x = toX(i), y = toY(v);
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, 2*Math.PI); ctx.fill();
+    }});
+    ctx.globalAlpha = 1;
+    const lx = PAD.left + pw - 150, ly = PAD.top + 16 + si * 18;
+    ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(lx, ly, 4, 0, 2*Math.PI); ctx.fill();
+    ctx.font = '12px Georgia,serif'; ctx.textAlign = 'left';
+    ctx.fillText(s.label, lx + 8, ly + 4);
+  }});
 }}
 </script>
 </body>
