@@ -60,9 +60,6 @@ $css
   background: #2266cc; color: #fff; border-color: #1a55bb;
 }
 </style>
-<script>
-MathJax = { tex: { inlineMath: [['$','$']] }, options: { skipHtmlTags: ['script','noscript','style','textarea'] } };
-</script>
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" id="MathJax-script" async></script>
 </head>
 <body>
@@ -71,69 +68,69 @@ MathJax = { tex: { inlineMath: [['$','$']] }, options: { skipHtmlTags: ['script'
 
 <div style="max-width:860px;font-size:0.95em;color:#444;line-height:1.7;margin-bottom:8px;">
 <p>
-The MLP applies $x \mapsto W_\mathrm{down}\,\phi(W_\mathrm{up}\,x)$, where
-$W_\mathrm{up} \in \mathbb{R}^{d_\mathrm{int} \times d_\mathrm{hid}}$ (first, expands) and
-$W_\mathrm{down} \in \mathbb{R}^{d_\mathrm{hid} \times d_\mathrm{int}}$ (second, contracts),
-with $d_\mathrm{int} = $n_intermediate$ and $d_\mathrm{hid} = $n_hidden$.
-Both matrices act in <em>neuron space</em> $\mathbb{R}^{d_\mathrm{int}}$, where the nonlinearity $\phi$ lives.
+The MLP applies \(x \mapsto W_\mathrm{down}\,\phi(W_\mathrm{up}\,x)\), where
+\(W_\mathrm{up} \in \mathbb{R}^{d_\mathrm{int} \times d_\mathrm{hid}}\) (first, expands) and
+\(W_\mathrm{down} \in \mathbb{R}^{d_\mathrm{hid} \times d_\mathrm{int}}\) (second, contracts),
+with \(d_\mathrm{int} = \) $n_intermediate and \(d_\mathrm{hid} = \) $n_hidden.
+Both matrices act in <em>neuron space</em> \(\mathbb{R}^{d_\mathrm{int}}\), where the nonlinearity \(\phi\) lives.
 </p>
 <p>
-SVDs: $W_\mathrm{up} = U_\mathrm{up} \Sigma_\mathrm{up} V_\mathrm{up}^\top$ and
-$W_\mathrm{down} = U_\mathrm{down} \Sigma_\mathrm{down} V_\mathrm{down}^\top$.
-The neuron-space bases are $u_i^\mathrm{up}$ (columns of $U_\mathrm{up}$, LSVs of $W_\mathrm{up}$, shape $d_\mathrm{int} \times d_\mathrm{hid}$)
-and $v_k^\mathrm{down}$ (columns of $V_\mathrm{down}$, RSVs of $W_\mathrm{down}$, shape $d_\mathrm{hid} \times d_\mathrm{int}$).
+SVDs: \(W_\mathrm{up} = U_\mathrm{up} \Sigma_\mathrm{up} V_\mathrm{up}^\top\) and
+\(W_\mathrm{down} = U_\mathrm{down} \Sigma_\mathrm{down} V_\mathrm{down}^\top\).
+The neuron-space bases are \(u_i^\mathrm{up}\) (columns of \(U_\mathrm{up}\), LSVs of \(W_\mathrm{up}\), shape \(d_\mathrm{int} \times d_\mathrm{hid}\))
+and \(v_k^\mathrm{down}\) (columns of \(V_\mathrm{down}\), RSVs of \(W_\mathrm{down}\), shape \(d_\mathrm{hid} \times d_\mathrm{int}\)).
 </p>
 <p>
 <strong>Overlap matrix.</strong>
-$M_{ik} = \langle u_i^\mathrm{up},\, v_k^\mathrm{down} \rangle^2 \in [0,1]$.
-Random baseline: $\mathbb{E}[M_{ik}] = 1/d_\mathrm{int} = 1/$n_intermediate$ for independent random unit vectors.
+\(M_{ik} = \langle u_i^\mathrm{up},\, v_k^\mathrm{down} \rangle^2 \in [0,1]\).
+Random baseline: \(\mathbb{E}[M_{ik}] = 1/d_\mathrm{int} = 1/\) $n_intermediate for independent random unit vectors.
 </p>
 <p>
 <strong>Alignment score.</strong>
-$\mathrm{align}_k = \frac{1}{k}\sum_{i,j \le k} M_{ij}$
-measures overlap of the top-$k$ singular subspaces of $W_\mathrm{up}$ and $W_\mathrm{down}$ in neuron space.
-Random baseline: $k / $n_intermediate$.
+\(\mathrm{align}_k = \frac{1}{k}\sum_{i,j \le k} M_{ij}\)
+measures overlap of the top-\(k\) singular subspaces of \(W_\mathrm{up}\) and \(W_\mathrm{down}\) in neuron space.
+Random baseline: \(k /\) $n_intermediate.
 </p>
 <p>
 <strong>All-ones projection.</strong>
-$c_i^\mathrm{up} = \langle u_i^\mathrm{up},\, \hat{1} \rangle$,
-$c_k^\mathrm{down} = \langle v_k^\mathrm{down},\, \hat{1} \rangle$,
-where $\hat{1} = \mathbf{1}/\sqrt{d_\mathrm{int}}$.
+\(c_i^\mathrm{up} = \langle u_i^\mathrm{up},\, \hat{1} \rangle\),
+\(c_k^\mathrm{down} = \langle v_k^\mathrm{down},\, \hat{1} \rangle\),
+where \(\hat{1} = \mathbf{1}/\sqrt{d_\mathrm{int}}\).
 A large value means that singular mode uniformly activates all neurons — a "broadcast" direction.
 </p>
 </div>
 
 <div class="layer-sidebar" id="layer-selector"></div>
 
-<div class="plot-label">Singular spectra of $W_\mathrm{up}$ and $W_\mathrm{down}$</div>
+<div class="plot-label">Singular spectra of \(W_\mathrm{up}\) and \(W_\mathrm{down}\)</div>
 <div class="plot-wrap" id="spectra-wrap">
   <canvas id="spectra-canvas"></canvas>
   <div class="plot-gear" id="spec-gear-btn">⚙</div>
   <div class="gear-menu" id="spec-gear-menu">
     <label><input type="checkbox" id="spec-logy" checked> log y</label>
     <label><input type="checkbox" id="spec-logx"> log x</label>
-    <label><input type="checkbox" id="spec-norm"> normalize ($\sigma / \langle\sigma\rangle$)</label>
+    <label><input type="checkbox" id="spec-norm"> normalize (\(\sigma / \langle\sigma\rangle\))</label>
   </div>
 </div>
 
-<div class="plot-label">Alignment: $\mathrm{align}_k = k^{-1}\sum_{i,j \le k} M_{ij}$</div>
+<div class="plot-label">Alignment: \(\mathrm{align}_k = k^{-1}\sum_{i,j \le k} M_{ij}\)</div>
 <div class="plot-wrap" id="align-wrap">
   <canvas id="align-canvas"></canvas>
   <div class="plot-gear" id="align-gear-btn">⚙</div>
   <div class="gear-menu" id="align-gear-menu">
     <label><input type="checkbox" id="align-logx"> log x</label>
     <label><input type="checkbox" id="align-logy"> log y</label>
-    <label><input type="checkbox" id="align-ratio"> show ratio ($\mathrm{align}_k$ / random)</label>
-    <label style="gap:6px;">max $k$&nbsp;<input type="number" id="align-maxk" value="$first_n_rank" min="1" max="$first_n_rank" style="width:56px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
+    <label><input type="checkbox" id="align-ratio"> show ratio (\(\mathrm{align}_k\) / random)</label>
+    <label style="gap:6px;">max \(k\)&nbsp;<input type="number" id="align-maxk" value="$first_n_rank" min="1" max="$first_n_rank" style="width:56px;font-size:0.9em;padding:1px 4px;border:1px solid #ccc;border-radius:3px;"></label>
   </div>
 </div>
 
-<div class="plot-label">Overlap matrix $M_{ik} = \langle u_i^\mathrm{up},\, v_k^\mathrm{down} \rangle^2$ (top $heatmap_n×$heatmap_n)</div>
+<div class="plot-label">Overlap matrix \(M_{ik} = \langle u_i^\mathrm{up},\, v_k^\mathrm{down} \rangle^2\) (top $heatmap_n×$heatmap_n)</div>
 <div class="plot-wrap heatmap" id="heatmap-wrap">
   <canvas id="heatmap-canvas"></canvas>
 </div>
 
-<div class="plot-label">Projection onto all-ones: $c_i^\mathrm{up} = \langle u_i^\mathrm{up},\,\hat{1}\rangle$ and $c_k^\mathrm{down} = \langle v_k^\mathrm{down},\,\hat{1}\rangle$</div>
+<div class="plot-label">Projection onto all-ones: \(c_i^\mathrm{up} = \langle u_i^\mathrm{up},\,\hat{1}\rangle\) and \(c_k^\mathrm{down} = \langle v_k^\mathrm{down},\,\hat{1}\rangle\)</div>
 <div class="plot-wrap" id="cossim-wrap">
   <canvas id="cossim-canvas"></canvas>
   <div class="plot-gear" id="cossim-gear-btn">⚙</div>
