@@ -156,6 +156,30 @@ def write_master_index(registry: list = None):
     print(f"  Updated {MASTER_INDEX}")
 
 
+def write_next_token_page(
+    slug: str,
+    title: str,
+    prompts: list,
+    results: dict,      # {model_name: [{token, prob}, ...] per prompt}
+    model_names: list,
+    description: str = "",
+) -> Path:
+    data_json = json.dumps({
+        "prompts":     prompts,
+        "model_names": model_names,
+        "results":     results,
+    })
+    out_dir = EXPTS_DIR / slug
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html = _render_template("next_token.html", css=CSS, title=title,
+                            description=description, data_json=data_json)
+    path = out_dir / "index.html"
+    path.write_text(html)
+    print(f"  Wrote {path}")
+    _register_experiment(slug, title, description, path)
+    return path
+
+
 def write_interactive_spectra_page(
     slug: str,
     title: str,

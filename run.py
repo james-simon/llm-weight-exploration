@@ -238,9 +238,32 @@ def cmd_expt(args):
             n_intermediate=n_intermediate_inferred,
         )
 
+    elif name == "next_token":
+        from src import inference
+        prompts = [
+            "The rain in Spain falls mainly on the",
+            "I have a lot of frustrated energy from the reading",
+        ]
+        models = args.models.split(",") if args.models else PYTHIA_MODELS
+        top_k = args.top_k or 15
+        results = inference.run_next_token(prompts, model_names=models, top_k=top_k)
+        slug = "next_token_pythia"
+        render.write_next_token_page(
+            slug=slug,
+            title="Pythia — next-token predictions",
+            prompts=prompts,
+            results=results,
+            model_names=models,
+            description=(
+                "Top next-token predictions from each Pythia model size, "
+                "for a fixed set of prompts. Bars show probability; "
+                "each panel is normalized to the top token."
+            ),
+        )
+
     else:
         print(f"Unknown experiment: {name}")
-        print("Available: singular_spectra_all_layers, midlayer_spectra_comparison, fanin_fanout_alignment, fanout_fanin_overlap, fanout_fanin_overlap_all_layers")
+        print("Available: singular_spectra_all_layers, midlayer_spectra_comparison, fanin_fanout_alignment, fanout_fanin_overlap, fanout_fanin_overlap_all_layers, next_token")
         sys.exit(1)
 
 

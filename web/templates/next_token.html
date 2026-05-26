@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>$title</title>
+<style>
+$css
+.prompt-block { margin: 40px 0; }
+.prompt-text {
+  font-family: monospace; font-size: 1.1em;
+  background: #f0f0f0; border-left: 4px solid #2266cc;
+  padding: 10px 16px; border-radius: 0 4px 4px 0;
+  margin-bottom: 16px; color: #111;
+}
+.model-grid {
+  display: flex; flex-wrap: wrap; gap: 20px;
+}
+.model-panel {
+  background: #fff; border: 1px solid #ddd; border-radius: 6px;
+  padding: 12px 16px; min-width: 220px; flex: 1 1 220px; max-width: 340px;
+}
+.model-name {
+  font-size: 0.85em; font-weight: bold; color: #555;
+  margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.bar-row {
+  display: flex; align-items: center; margin: 3px 0; gap: 6px;
+}
+.bar-token {
+  font-family: monospace; font-size: 0.88em; color: #222;
+  min-width: 110px; text-align: right; flex-shrink: 0;
+  white-space: pre;
+}
+.bar-track {
+  flex: 1; background: #eee; border-radius: 2px; height: 14px; position: relative;
+}
+.bar-fill {
+  height: 100%; border-radius: 2px; background: #2266cc;
+}
+.bar-prob {
+  font-size: 0.78em; color: #888; min-width: 38px; text-align: right; flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+<a class="back" href="../../index.html">← Back to experiments</a>
+<h1>$title</h1>
+<p>$description</p>
+
+<script>
+const DATA = $data_json;
+
+DATA.prompts.forEach((prompt, pi) => {
+  const block = document.createElement('div');
+  block.className = 'prompt-block';
+
+  const promptEl = document.createElement('div');
+  promptEl.className = 'prompt-text';
+  promptEl.textContent = '"' + prompt + ' ___"';
+  block.appendChild(promptEl);
+
+  const h2 = document.createElement('h2');
+  h2.style.marginTop = '0';
+  h2.textContent = 'Next-token distribution';
+  block.appendChild(h2);
+
+  const grid = document.createElement('div');
+  grid.className = 'model-grid';
+
+  DATA.model_names.forEach(model => {
+    const dist = DATA.results[model] && DATA.results[model][pi];
+    if (!dist) return;
+
+    const panel = document.createElement('div');
+    panel.className = 'model-panel';
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'model-name';
+    nameEl.textContent = model;
+    panel.appendChild(nameEl);
+
+    const maxProb = dist[0].prob;
+    dist.forEach(({token, prob}) => {
+      const row = document.createElement('div');
+      row.className = 'bar-row';
+
+      const tokEl = document.createElement('div');
+      tokEl.className = 'bar-token';
+      tokEl.textContent = JSON.stringify(token);
+
+      const track = document.createElement('div');
+      track.className = 'bar-track';
+      const fill = document.createElement('div');
+      fill.className = 'bar-fill';
+      fill.style.width = (prob / maxProb * 100) + '%';
+      track.appendChild(fill);
+
+      const probEl = document.createElement('div');
+      probEl.className = 'bar-prob';
+      probEl.textContent = (prob * 100).toFixed(1) + '%';
+
+      row.appendChild(tokEl); row.appendChild(track); row.appendChild(probEl);
+      panel.appendChild(row);
+    });
+
+    grid.appendChild(panel);
+  });
+
+  block.appendChild(grid);
+  document.body.appendChild(block);
+});
+</script>
+</body>
+</html>
