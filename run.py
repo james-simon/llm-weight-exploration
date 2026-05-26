@@ -243,6 +243,7 @@ def cmd_expt(args):
         prompts = [
             "The rain in Spain falls mainly on the",
             "I have a lot of frustrated energy from the reading",
+            "Y'all made it to Imbue? No murdered",
         ]
         models = args.models.split(",") if args.models else PYTHIA_MODELS
         top_k = args.top_k or 15
