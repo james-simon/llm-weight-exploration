@@ -37,9 +37,9 @@ def run_next_token(
 
     print(f"  Computing {cache_name} for {len(model_names)} models x {len(prompts)} prompts ...")
 
-    # load tokenizer once (all Pythia share the same tokenizer)
-    # use_fast=False avoids a tiktoken conversion bug with local files in newer transformers
-    tok = AutoTokenizer.from_pretrained(str(MODELS_DIR / model_names[0]), use_fast=False)
+    # all Pythia models share the EleutherAI/gpt-neox-20b tokenizer
+    TOKENIZER_DIR = MODELS_DIR.parent / "tokenizer"
+    tok = AutoTokenizer.from_pretrained(str(TOKENIZER_DIR))
 
     save_data = {"prompts": np.array(prompts), "model_names": np.array(model_names)}
 
