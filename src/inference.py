@@ -21,8 +21,7 @@ def run_next_token(
     Returns: {model_name: [{token: str, prob: float}, ...] for each prompt}
     Cached as "inference_{model}_{prompt_hash}.npz" per model.
     """
-    import hashlib, torch
-    from transformers import AutoTokenizer, AutoModelForCausalLM
+    import hashlib
 
     if model_names is None:
         model_names = PYTHIA_MODELS
@@ -35,6 +34,8 @@ def run_next_token(
         raw = svd.load_results(cache_name)
         return _unpack(raw, prompts, model_names, top_k)
 
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
     print(f"  Computing {cache_name} for {len(model_names)} models x {len(prompts)} prompts ...")
 
     # all Pythia models share the EleutherAI/gpt-neox-20b tokenizer
