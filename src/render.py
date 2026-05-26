@@ -160,14 +160,20 @@ def write_next_token_page(
     slug: str,
     title: str,
     prompts: list,
-    results: dict,      # {model_name: [{token, prob}, ...] per prompt}
+    results: dict,          # {model_name: [{token, prob}, ...] per prompt}
     model_names: list,
+    perplexity: dict = None,  # {model_name: float}
+    pile_indices: list = None, # indices into prompts that came from The Pile
     description: str = "",
 ) -> Path:
+    from src.inference import MODEL_PARAMS
     data_json = json.dumps({
-        "prompts":     prompts,
-        "model_names": model_names,
-        "results":     results,
+        "prompts":      prompts,
+        "model_names":  model_names,
+        "results":      results,
+        "perplexity":   perplexity or {},
+        "model_params": {m: MODEL_PARAMS.get(m) for m in model_names},
+        "pile_indices": pile_indices or [],
     })
     out_dir = EXPTS_DIR / slug
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -240,25 +240,38 @@ def cmd_expt(args):
 
     elif name == "next_token":
         from src import inference
-        prompts = [
+
+        custom_prompts = [
             "The rain in Spain falls mainly on the",
             "I have a lot of frustrated energy from the reading",
             "Y'all made it to Imbue? No murdered",
         ]
+        # strip last word from each Pile sentence so model predicts it
+        pile_sentences = inference.sample_pile_sentences(n_sentences=4, seed=42)
+        pile_prompts = [" ".join(s.split()[:-1]) for s in pile_sentences]
+
+        prompts = custom_prompts + pile_prompts
+        pile_indices = list(range(len(custom_prompts), len(prompts)))
+
         models = args.models.split(",") if args.models else PYTHIA_MODELS
         top_k = args.top_k or 15
+
         results = inference.run_next_token(prompts, model_names=models, top_k=top_k)
+        perplexity = inference.run_perplexity(pile_sentences, model_names=models)
+
         slug = "next_token_pythia"
         render.write_next_token_page(
             slug=slug,
-            title="Pythia — next-token predictions",
+            title="Pythia — next-token predictions & perplexity",
             prompts=prompts,
             results=results,
             model_names=models,
+            perplexity=perplexity,
+            pile_indices=pile_indices,
             description=(
-                "Top next-token predictions from each Pythia model size, "
-                "for a fixed set of prompts. Bars show probability; "
-                "each panel is normalized to the top token."
+                "Top next-token predictions from each Pythia model size. "
+                "Prompts marked [Pile] are truncated sentences from the training corpus. "
+                "Bars normalized to the top token per panel."
             ),
         )
 

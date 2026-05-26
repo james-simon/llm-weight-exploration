@@ -40,6 +40,13 @@ $css
 .bar-prob {
   font-size: 0.78em; color: #888; min-width: 38px; text-align: right; flex-shrink: 0;
 }
+.ppl-wrap {
+  width: 100%; max-width: 700px; margin: 16px 0;
+}
+.ppl-wrap canvas {
+  display: block; width: 100%; height: 340px;
+  border: 1px solid #ddd; border-radius: 4px; background: #fff;
+}
 </style>
 </head>
 <body>
@@ -50,13 +57,107 @@ $css
 <script>
 const DATA = $data_json;
 
+// ── Perplexity plot ───────────────────────────────────────────────────────────
+if (DATA.perplexity && Object.keys(DATA.perplexity).length) {
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Perplexity vs. model size (Pile samples)';
+  document.body.appendChild(h2);
+
+  const note = document.createElement('p');
+  note.textContent = 'Average per-token perplexity on the Pile sentences below. Lower = better. Log–log scale.';
+  document.body.appendChild(note);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'ppl-wrap';
+  const cvs = document.createElement('canvas');
+  wrap.appendChild(cvs);
+  document.body.appendChild(wrap);
+
+  // draw after layout
+  requestAnimationFrame(() => {
+    const dpr = window.devicePixelRatio || 1;
+    const W = cvs.offsetWidth, H = cvs.offsetHeight || 340;
+    cvs.width = W * dpr; cvs.height = H * dpr;
+    const ctx = cvs.getContext('2d'); ctx.scale(dpr, dpr);
+
+    const PAD = {top: 30, right: 30, bottom: 60, left: 70};
+    const pw = W - PAD.left - PAD.right, ph = H - PAD.top - PAD.bottom;
+
+    const pts = DATA.model_names
+      .filter(m => DATA.perplexity[m] != null && DATA.model_params[m] != null)
+      .map(m => ({name: m, params: DATA.model_params[m], ppl: DATA.perplexity[m]}));
+
+    if (!pts.length) return;
+
+    const xMin = Math.log10(Math.min(...pts.map(p => p.params)));
+    const xMax = Math.log10(Math.max(...pts.map(p => p.params)));
+    const yMin = Math.log10(Math.min(...pts.map(p => p.ppl)) * 0.9);
+    const yMax = Math.log10(Math.max(...pts.map(p => p.ppl)) * 1.1);
+
+    function toX(v) { return PAD.left + (Math.log10(v) - xMin) / (xMax - xMin) * pw; }
+    function toY(v) { return PAD.top  + (1 - (Math.log10(v) - yMin) / (yMax - yMin)) * ph; }
+
+    // grid
+    ctx.strokeStyle = '#eee'; ctx.lineWidth = 1;
+    ctx.fillStyle = '#888'; ctx.font = '11px Georgia,serif';
+    [1e8, 1e9, 1e10].forEach(v => {
+      if (Math.log10(v) < xMin - 0.1 || Math.log10(v) > xMax + 0.1) return;
+      const x = toX(v);
+      ctx.beginPath(); ctx.moveTo(x, PAD.top); ctx.lineTo(x, PAD.top + ph); ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillText(v >= 1e9 ? (v/1e9).toFixed(0)+'B' : (v/1e6).toFixed(0)+'M', x, PAD.top + ph + 16);
+    });
+    [5, 10, 20, 50, 100, 200].forEach(v => {
+      if (Math.log10(v) < yMin - 0.05 || Math.log10(v) > yMax + 0.05) return;
+      const y = toY(v);
+      ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + pw, y); ctx.stroke();
+      ctx.textAlign = 'right';
+      ctx.fillText(v, PAD.left - 6, y + 4);
+    });
+
+    // axes
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(PAD.left, PAD.top); ctx.lineTo(PAD.left, PAD.top + ph);
+    ctx.lineTo(PAD.left + pw, PAD.top + ph); ctx.stroke();
+
+    // axis labels
+    ctx.fillStyle = '#444'; ctx.font = '13px Georgia,serif'; ctx.textAlign = 'center';
+    ctx.fillText('parameters', PAD.left + pw/2, H - 8);
+    ctx.save(); ctx.translate(14, PAD.top + ph/2); ctx.rotate(-Math.PI/2);
+    ctx.fillText('perplexity', 0, 0); ctx.restore();
+
+    // line
+    ctx.strokeStyle = '#2266cc'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = toX(p.params), y = toY(p.ppl);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // dots + labels
+    pts.forEach(p => {
+      const x = toX(p.params), y = toY(p.ppl);
+      ctx.fillStyle = '#2266cc';
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, 2*Math.PI); ctx.fill();
+      ctx.fillStyle = '#444'; ctx.font = '11px Georgia,serif'; ctx.textAlign = 'left';
+      const label = p.name.replace('pythia-', '') + '  ' + p.ppl.toFixed(1);
+      ctx.fillText(label, x + 8, y + 4);
+    });
+  });
+}
+
+// ── Next-token bar charts ─────────────────────────────────────────────────────
 DATA.prompts.forEach((prompt, pi) => {
   const block = document.createElement('div');
   block.className = 'prompt-block';
 
   const promptEl = document.createElement('div');
   promptEl.className = 'prompt-text';
-  promptEl.textContent = '"' + prompt + ' ___"';
+  // mark whether this is a Pile sentence or a custom prompt
+  const tag = DATA.pile_indices && DATA.pile_indices.includes(pi) ? ' [Pile]' : '';
+  promptEl.textContent = '"' + prompt + ' ___"' + tag;
   block.appendChild(promptEl);
 
   const h2 = document.createElement('h2');
