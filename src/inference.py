@@ -38,7 +38,8 @@ def run_next_token(
     print(f"  Computing {cache_name} for {len(model_names)} models x {len(prompts)} prompts ...")
 
     # load tokenizer once (all Pythia share the same tokenizer)
-    tok = AutoTokenizer.from_pretrained(str(MODELS_DIR / model_names[0]))
+    # use_fast=False avoids a tiktoken conversion bug with local files in newer transformers
+    tok = AutoTokenizer.from_pretrained(str(MODELS_DIR / model_names[0]), use_fast=False)
 
     save_data = {"prompts": np.array(prompts), "model_names": np.array(model_names)}
 
