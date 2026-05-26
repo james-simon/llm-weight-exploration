@@ -49,7 +49,8 @@ def sample_pile_sentences(n_sentences: int = 6, min_words: int = 8,
     from datasets import load_dataset
     import re
 
-    ds = load_dataset("EleutherAI/pile", split="train", streaming=True,
+    # monology/pile-uncopyrighted is a HF-hosted subset of The Pile
+    ds = load_dataset("monology/pile-uncopyrighted", split="train", streaming=True,
                       trust_remote_code=True)
     rng = np.random.default_rng(seed)
 
